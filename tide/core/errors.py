@@ -27,6 +27,18 @@ class ConflictError(TideError):
 
     exit_code: int = 4
 
+    def __str__(self) -> str:
+        branches = ", ".join(sorted(self.branches))
+        files = ", ".join(sorted(self.files)) if self.files else "-"
+        rerun = f"tide {self.operation} --conflict=pause"
+        return (
+            "conflict detected\n"
+            f"operation: {self.operation}\n"
+            f"branches: {branches}\n"
+            f"files: {files}\n"
+            f"rerun: {rerun}"
+        )
+
 
 class ForgeError(TideError):
     exit_code = 5

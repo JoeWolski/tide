@@ -7,6 +7,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast
 
 import click
 
@@ -26,6 +27,13 @@ class CliContext:
     repo: GitRepo
     config: TideConfig
     service: StackService
+
+
+ConflictMode = Literal["rollback", "pause", "interactive"]
+
+
+def _conflict_mode(value: str) -> ConflictMode:
+    return cast(ConflictMode, value)
 
 
 def _emit_error(err: TideError, *, as_json: bool) -> None:
@@ -67,10 +75,25 @@ def _maybe_move_dirty(repo: GitRepo, target: str, mode: str, operation: str) -> 
             raise ConflictError(operation=operation, branches=[target], files=files)
 
 
-def _run_mutating(obj: CliContext, fn: Callable[[], None]) -> None:
+def _run_mutating(obj: CliContext, fn: Callable[[], None], conflict_mode: ConflictMode) -> None:
     try:
-        with RepoTransaction(obj.repo):
+        if conflict_mode == "rollback":
+            with RepoTransaction(obj.repo):
+                fn()
+        else:
             fn()
+    except ConflictError as err:
+        if conflict_mode == "interactive":
+            click.echo(
+                "conflict detected; repository left in conflicted state for manual resolution",
+                err=True,
+            )
+        elif conflict_mode == "pause":
+            click.echo(
+                "conflict detected; repository paused in conflicted state (resolve manually)",
+                err=True,
+            )
+        _raise(err, as_json=obj.json_output)
     except TideError as err:
         _raise(err, as_json=obj.json_output)
 
@@ -95,20 +118,22 @@ def _render_show(obj: CliContext) -> str:
     trunk = obj.config.trunk
     lines: list[str] = []
 
-    def visit(node: str, prefix: str) -> None:
+    def visit(node: str, prefix: str, marker: str = "") -> None:
         suffix_parts: list[str] = []
         if node in prs:
             suffix_parts.append(f"PR#{prs[node].number}")
         if node == obj.repo.current_branch():
             suffix_parts.append("current")
         suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
-        lines.append(f"{prefix}{node}{suffix}")
+        lines.append(f"{prefix}{node}{marker}{suffix}")
         for edge in children.get(node, []):
-            marker = "*" if edge.source.value == "heuristic" else ""
-            visit(edge.child + marker, prefix + "  ")
+            edge_marker = "*" if edge.source.value == "heuristic" else ""
+            visit(edge.child, prefix + "  ", edge_marker)
 
-    visit(trunk, "")
-    return "\n".join(lines)
+    if trunk in graph.nodes:
+        visit(trunk, "")
+        return "\n".join(lines)
+    return "\n".join(sorted(graph.nodes.keys()))
 
 
 def _status_payload(obj: CliContext) -> dict[str, object]:
@@ -130,7 +155,7 @@ def _status_payload(obj: CliContext) -> dict[str, object]:
     return {"branches": rows}
 
 
-def _ripple_from(obj: CliContext, root: str) -> None:
+def _ripple_from(obj: CliContext, root: str, conflict_mode: ConflictMode) -> None:
     strategy = str(obj.config.values.get("stack", {}).get("ripple", {}).get("strategy", "rebase"))
     graph = obj.service.infer_graph()
     todo: list[tuple[str, str]] = []
@@ -144,10 +169,11 @@ def _ripple_from(obj: CliContext, root: str) -> None:
 
     for child, parent in todo:
         obj.repo.run("checkout", child)
-        if strategy == "rebase" or strategy == "cherry-pick":
+        if strategy in {"rebase", "cherry-pick"}:
             out = obj.repo.run("rebase", parent, check=False)
             if out.code != 0:
-                obj.repo.run("rebase", "--abort", check=False)
+                if conflict_mode == "rollback":
+                    obj.repo.run("rebase", "--abort", check=False)
                 raise obj.service.conflict_from_git_failure(
                     operation="ripple",
                     branches=[child, parent],
@@ -155,7 +181,8 @@ def _ripple_from(obj: CliContext, root: str) -> None:
         elif strategy == "merge":
             out = obj.repo.run("merge", "--no-edit", parent, check=False)
             if out.code != 0:
-                obj.repo.run("merge", "--abort", check=False)
+                if conflict_mode == "rollback":
+                    obj.repo.run("merge", "--abort", check=False)
                 raise obj.service.conflict_from_git_failure(
                     operation="ripple",
                     branches=[child, parent],
@@ -213,7 +240,7 @@ def add(obj: CliContext, feature: str, stack: str, dirty: str | None) -> None:
         else:
             click.echo(branch)
 
-    _run_mutating(obj, run)
+    _run_mutating(obj, run, "rollback")
 
 
 @main.command()
@@ -256,7 +283,7 @@ def status(obj: CliContext) -> None:
 )
 @click.pass_obj
 def up_cmd(obj: CliContext, dirty: str | None, conflict: str) -> None:
-    del conflict
+    conflict_mode = _conflict_mode(conflict)
 
     def run() -> None:
         graph = obj.service.infer_graph()
@@ -270,7 +297,7 @@ def up_cmd(obj: CliContext, dirty: str | None, conflict: str) -> None:
         else:
             click.echo(parent)
 
-    _run_mutating(obj, run)
+    _run_mutating(obj, run, conflict_mode)
 
 
 @main.command(name="down")
@@ -282,7 +309,7 @@ def up_cmd(obj: CliContext, dirty: str | None, conflict: str) -> None:
 )
 @click.pass_obj
 def down_cmd(obj: CliContext, dirty: str | None, conflict: str) -> None:
-    del conflict
+    conflict_mode = _conflict_mode(conflict)
 
     def run() -> None:
         graph = obj.service.infer_graph()
@@ -294,7 +321,7 @@ def down_cmd(obj: CliContext, dirty: str | None, conflict: str) -> None:
         else:
             click.echo(child)
 
-    _run_mutating(obj, run)
+    _run_mutating(obj, run, conflict_mode)
 
 
 @main.command(name="goto")
@@ -307,7 +334,7 @@ def down_cmd(obj: CliContext, dirty: str | None, conflict: str) -> None:
 )
 @click.pass_obj
 def goto_cmd(obj: CliContext, target: str, dirty: str | None, conflict: str) -> None:
-    del conflict
+    conflict_mode = _conflict_mode(conflict)
 
     def run() -> None:
         if not obj.repo.branch_exists(target):
@@ -318,7 +345,7 @@ def goto_cmd(obj: CliContext, target: str, dirty: str | None, conflict: str) -> 
         else:
             click.echo(target)
 
-    _run_mutating(obj, run)
+    _run_mutating(obj, run, conflict_mode)
 
 
 @main.command(name="ripple")
@@ -329,22 +356,18 @@ def goto_cmd(obj: CliContext, target: str, dirty: str | None, conflict: str) -> 
 )
 @click.pass_obj
 def ripple_cmd(obj: CliContext, conflict: str) -> None:
-    if conflict != "rollback":
-        _raise(
-            InputError("only --conflict=rollback is currently supported"),
-            as_json=obj.json_output,
-        )
+    conflict_mode = _conflict_mode(conflict)
 
     def run() -> None:
         root = obj.repo.current_branch()
-        _ripple_from(obj, root)
+        _ripple_from(obj, root, conflict_mode)
         obj.repo.run("checkout", root)
         if obj.json_output:
             click.echo(json.dumps({"rippled_from": root}))
         else:
             click.echo(root)
 
-    _run_mutating(obj, run)
+    _run_mutating(obj, run, conflict_mode)
 
 
 @main.command(name="apply")
@@ -357,11 +380,7 @@ def ripple_cmd(obj: CliContext, conflict: str) -> None:
 )
 @click.pass_obj
 def apply_cmd(obj: CliContext, target: str, ripple: bool, conflict: str) -> None:
-    if conflict != "rollback":
-        _raise(
-            InputError("only --conflict=rollback is currently supported"),
-            as_json=obj.json_output,
-        )
+    conflict_mode = _conflict_mode(conflict)
 
     def run() -> None:
         if not obj.repo.branch_exists(target):
@@ -381,23 +400,27 @@ def apply_cmd(obj: CliContext, target: str, ripple: bool, conflict: str) -> None
             handle.write(patch)
             patch_path = handle.name
 
-        obj.repo.run("checkout", target)
-        applied = obj.repo.run("apply", "--index", patch_path, check=False)
-        if applied.code != 0:
-            raise obj.service.conflict_from_git_failure(
-                operation="apply",
-                branches=[current, target],
-                fallback_files=patch_files,
-            )
-        if ripple:
-            _ripple_from(obj, target)
-        obj.repo.run("checkout", current)
+        try:
+            obj.repo.run("checkout", target)
+            applied = obj.repo.run("apply", "--index", patch_path, check=False)
+            if applied.code != 0:
+                raise obj.service.conflict_from_git_failure(
+                    operation="apply",
+                    branches=[current, target],
+                    fallback_files=patch_files,
+                )
+            if ripple:
+                _ripple_from(obj, target, conflict_mode)
+            obj.repo.run("checkout", current)
+        finally:
+            Path(patch_path).unlink(missing_ok=True)
+
         if obj.json_output:
             click.echo(json.dumps({"applied": {"from": current, "to": target}, "ripple": ripple}))
         else:
             click.echo(f"{current} -> {target}")
 
-    _run_mutating(obj, run)
+    _run_mutating(obj, run, conflict_mode)
 
 
 @main.group(name="pr")
@@ -436,15 +459,28 @@ def pr_create_cmd(
         for pr in created:
             click.echo(f"#{pr.number} {pr.head} -> {pr.base}")
 
-    _run_mutating(obj, run)
+    _run_mutating(obj, run, "rollback")
 
 
 @main.command(name="land")
 @click.option("--stack", "stack_selector", default=None)
 @click.option("--scope", type=click.Choice(["path", "subtree", "component"]), default="path")
 @click.option("--mode", type=click.Choice(["squash-each", "close-non-head"]), default="squash-each")
+@click.option(
+    "--conflict",
+    type=click.Choice(["rollback", "interactive", "pause"]),
+    default="rollback",
+)
 @click.pass_obj
-def land_cmd(obj: CliContext, stack_selector: str | None, scope: str, mode: str) -> None:
+def land_cmd(
+    obj: CliContext,
+    stack_selector: str | None,
+    scope: str,
+    mode: str,
+    conflict: str,
+) -> None:
+    conflict_mode = _conflict_mode(conflict)
+
     def run() -> None:
         graph = obj.service.infer_graph()
         selector = obj.repo.current_branch() if stack_selector is None else stack_selector
@@ -474,7 +510,8 @@ def land_cmd(obj: CliContext, stack_selector: str | None, scope: str, mode: str)
         for branch in ordered:
             merged = obj.repo.run("merge", "--squash", branch, check=False)
             if merged.code != 0:
-                obj.repo.run("merge", "--abort", check=False)
+                if conflict_mode == "rollback":
+                    obj.repo.run("merge", "--abort", check=False)
                 raise obj.service.conflict_from_git_failure(
                     operation="land",
                     branches=[branch, trunk],
@@ -489,7 +526,7 @@ def land_cmd(obj: CliContext, stack_selector: str | None, scope: str, mode: str)
         else:
             click.echo(f"landed {len(ordered)} branches onto {trunk}")
 
-    _run_mutating(obj, run)
+    _run_mutating(obj, run, conflict_mode)
 
 
 @main.command(name="checkout")
@@ -506,7 +543,7 @@ def checkout_cmd(obj: CliContext, target: str, dirty: str | None) -> None:
         else:
             click.echo(target)
 
-    _run_mutating(obj, run)
+    _run_mutating(obj, run, "rollback")
 
 
 @main.command(name="push")
@@ -520,7 +557,7 @@ def push_cmd(obj: CliContext) -> None:
         else:
             click.echo(current)
 
-    _run_mutating(obj, run)
+    _run_mutating(obj, run, "rollback")
 
 
 @main.command(name="sync")
@@ -531,11 +568,7 @@ def push_cmd(obj: CliContext) -> None:
 )
 @click.pass_obj
 def sync_cmd(obj: CliContext, conflict: str) -> None:
-    if conflict != "rollback":
-        _raise(
-            InputError("only --conflict=rollback is currently supported"),
-            as_json=obj.json_output,
-        )
+    conflict_mode = _conflict_mode(conflict)
 
     def run() -> None:
         current = obj.repo.current_branch()
@@ -552,7 +585,8 @@ def sync_cmd(obj: CliContext, conflict: str) -> None:
         obj.repo.run("fetch", "origin")
         rebased = obj.repo.run("rebase", upstream, check=False)
         if rebased.code != 0:
-            obj.repo.run("rebase", "--abort", check=False)
+            if conflict_mode == "rollback":
+                obj.repo.run("rebase", "--abort", check=False)
             raise obj.service.conflict_from_git_failure(
                 operation="sync",
                 branches=[current, upstream],
@@ -562,7 +596,7 @@ def sync_cmd(obj: CliContext, conflict: str) -> None:
         else:
             click.echo(current)
 
-    _run_mutating(obj, run)
+    _run_mutating(obj, run, conflict_mode)
 
 
 if __name__ == "__main__":

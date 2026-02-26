@@ -535,10 +535,15 @@ def land_cmd(
         obj.service.ensure_mergeable(to_land)
 
         if mode == "close-non-head":
+            head_branch = to_land[0] if to_land else selector
+            closed = sorted(branch for branch in to_land if branch != head_branch)
             if obj.json_output:
-                click.echo(json.dumps({"closed": sorted(to_land)}))
+                click.echo(json.dumps({"head": head_branch, "closed": closed}))
             else:
-                click.echo("closed non-head PRs")
+                if closed:
+                    click.echo(f"closed non-head PRs: {', '.join(closed)}")
+                else:
+                    click.echo("no non-head PRs to close")
             return
 
         ordered = [branch for branch in reversed(branches) if branch != trunk]

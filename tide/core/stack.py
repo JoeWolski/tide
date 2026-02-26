@@ -32,12 +32,28 @@ class StackInferer:
                     continue
                 if child == parent:
                     continue
+                if StackInferer._introduces_cycle(graph, child=child, parent=parent):
+                    continue
                 graph.add_edge(StackEdge(child=child, parent=parent, source=source))
 
         apply(data.pr_edges, EdgeSource.PR)
         apply(data.remote_edges, EdgeSource.REMOTE)
         apply(data.heuristic_edges, EdgeSource.HEURISTIC)
         return graph
+
+    @staticmethod
+    def _introduces_cycle(graph: StackGraph, *, child: str, parent: str) -> bool:
+        cur = parent
+        seen: set[str] = set()
+        while cur not in seen:
+            if cur == child:
+                return True
+            seen.add(cur)
+            edge = graph.parents.get(cur)
+            if edge is None:
+                return False
+            cur = edge.parent
+        return True
 
 
 def path_to_root(graph: StackGraph, branch: str) -> list[str]:

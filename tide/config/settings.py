@@ -29,6 +29,7 @@ DEFAULTS: dict[str, Any] = {
 }
 
 TOKEN_RE = re.compile(r"\$(USER|STACK|FEATURE|DATE|N|BASE)")
+TOKEN_ANY_RE = re.compile(r"\$([A-Z][A-Z0-9_]*)")
 INVALID_REF_RE = re.compile(r"[~^:?*\[\]\\]|\.\.|//|@$|\.$")
 
 
@@ -113,5 +114,50 @@ def load_config(repo_root: Path, *, env: dict[str, str] | None = None) -> TideCo
     template = str(values["naming"]["branch_template"])
     if "$FEATURE" not in template:
         raise InputError("naming.branch_template must include $FEATURE")
+    supported_tokens = {"USER", "STACK", "FEATURE", "DATE", "N", "BASE"}
+    unknown_tokens = sorted(
+        token for token in TOKEN_ANY_RE.findall(template) if token not in supported_tokens
+    )
+    if unknown_tokens:
+        raise InputError(
+            "naming.branch_template contains unsupported token(s): "
+            + ", ".join(f"${token}" for token in unknown_tokens)
+        )
+
+    ripple = str(values.get("stack", {}).get("ripple", {}).get("strategy", "rebase"))
+    if ripple not in {"rebase", "merge", "cherry-pick"}:
+        raise InputError(f"stack.ripple.strategy must be rebase|merge|cherry-pick, got: {ripple}")
+
+    dirty_default = str(values.get("dirty", {}).get("default", "move"))
+    if dirty_default not in {"fail", "stash", "move"}:
+        raise InputError(f"dirty.default must be fail|stash|move, got: {dirty_default}")
+
+    conflict_mode = str(values.get("conflict", {}).get("mode", "rollback"))
+    if conflict_mode not in {"rollback", "interactive", "pause"}:
+        raise InputError(f"conflict.mode must be rollback|interactive|pause, got: {conflict_mode}")
+
+    collab_mode = str(values.get("collab", {}).get("mode", "fork"))
+    if collab_mode not in {"fork", "direct"}:
+        raise InputError(f"collab.mode must be fork|direct, got: {collab_mode}")
+
+    auto_update_channel = str(values.get("auto_update", {}).get("channel", "release"))
+    if auto_update_channel not in {"release", "master", "off"}:
+        raise InputError(
+            "auto_update.channel must be release|master|off, "
+            f"got: {auto_update_channel}"
+        )
+
+    forge_provider = str(values.get("forge", {}).get("provider", "github"))
+    if forge_provider != "github":
+        raise InputError(f"forge.provider must be github, got: {forge_provider}")
+
+    forge_github = values.get("forge", {}).get("github", {})
+    transport = str(forge_github.get("transport", "graphql"))
+    if transport not in {"graphql", "rest"}:
+        raise InputError(f"forge.github.transport must be graphql|rest, got: {transport}")
+
+    auth = str(forge_github.get("auth", "gh"))
+    if auth not in {"gh", "env", "keyring", "manual"}:
+        raise InputError(f"forge.github.auth must be gh|env|keyring|manual, got: {auth}")
 
     return TideConfig(values=values)

@@ -43,6 +43,21 @@ Why this is non-trivial:
 - branch traversal and graph rendering must be stable.
 - output ordering is sorted and deterministic.
 
+## 4) Pause Mode Conflict: `tide ripple --conflict pause`
+
+Example assertion from integration CI (`test_ripple_conflict_pause_keeps_repo_in_conflicted_state`):
+
+```text
+conflict detected; repository paused in conflicted state (resolve manually)
+```
+
+Expected exit code: `4`
+
+Expected effect:
+- operation stops on first conflicted child branch
+- rebase state remains present (`.git/rebase-merge` exists)
+- conflict markers remain unresolved (`UU f.txt` in `git status --porcelain`)
+
 ## Sample CI Pass Snippet
 
 ```text

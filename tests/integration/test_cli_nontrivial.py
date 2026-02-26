@@ -104,3 +104,34 @@ def test_status_json_is_deterministic(tmp_path: Path) -> None:
     first = run(repo, "--json", "status")
     second = run(repo, "--json", "status")
     assert first.stdout == second.stdout
+
+
+def test_ripple_conflict_pause_keeps_repo_in_conflicted_state(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+
+    (repo / "f.txt").write_text("line\n", encoding="utf-8")
+    git(repo, "add", "f.txt")
+    git(repo, "commit", "-m", "base")
+
+    git(repo, "checkout", "-b", "feat1")
+    (repo / "f.txt").write_text("line feat1\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat1")
+    git(repo, "config", "branch.feat1.tide-parent", "main")
+
+    git(repo, "checkout", "-b", "feat2")
+    (repo / "f.txt").write_text("line feat2\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat2")
+    git(repo, "config", "branch.feat2.tide-parent", "feat1")
+
+    git(repo, "checkout", "main")
+    (repo / "f.txt").write_text("line main\n", encoding="utf-8")
+    git(repo, "commit", "-am", "main")
+
+    out = run(repo, "ripple", "--conflict", "pause", check=False)
+    assert out.returncode == 4
+    assert "conflict detected; repository paused in conflicted state" in out.stderr
+    assert (repo / ".git" / "rebase-merge").exists()
+    status = git(repo, "status", "--porcelain")
+    assert "UU f.txt" in status

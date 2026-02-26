@@ -18,6 +18,7 @@ from pathlib import Path
 from types import FrameType
 from typing import Literal, TypeAlias
 
+from tide.core.errors import GitError
 from tide.git.repo import GitRepo, GitResult
 
 
@@ -167,8 +168,12 @@ class RepoTransaction(AbstractContextManager["RepoTransaction"]):
                 continue
 
             head = self._run_git_in(path, "rev-parse", "HEAD", check=False).stdout.strip()
-            dirty = bool(self._run_git_in(path, "status", "--porcelain", check=False).stdout.strip())
-            stash_count = len(self._run_git_in(path, "stash", "list", check=False).stdout.splitlines())
+            dirty = bool(
+                self._run_git_in(path, "status", "--porcelain", check=False).stdout.strip()
+            )
+            stash_count = len(
+                self._run_git_in(path, "stash", "list", check=False).stdout.splitlines()
+            )
             sub_marker = f"{marker}-sub-{parts[1].replace('/', '_')}"
             if dirty:
                 self._run_git_in(path, "stash", "push", "-u", "-m", sub_marker)
@@ -267,16 +272,36 @@ class RepoTransaction(AbstractContextManager["RepoTransaction"]):
         if self.snapshot is None:
             return
 
-        if self.snapshot.had_staged_or_dirty:
-            stash_ref = self._find_stash_ref(self.repo.root, self.snapshot.stash_marker)
+        snapshot = self.snapshot
+        if snapshot.had_staged_or_dirty:
+            stash_ref = self._find_stash_ref(self.repo.root, snapshot.stash_marker)
             if stash_ref is not None:
+                restored = self.repo.run("stash", "apply", "--index", stash_ref, check=False)
+                if restored.code != 0:
+                    raise GitError(
+                        "failed to restore pre-transaction dirty state; "
+                        f"recover with: git stash apply --index {stash_ref}"
+                    )
                 self.repo.run("stash", "drop", stash_ref, check=False)
 
-        for sub in self.snapshot.submodules:
+        for sub in snapshot.submodules:
             if not sub.had_staged_or_dirty or not sub.path.exists():
                 continue
             stash_ref = self._find_stash_ref(sub.path, sub.stash_marker)
             if stash_ref is not None:
+                restored = self._run_git_in(
+                    sub.path,
+                    "stash",
+                    "apply",
+                    "--index",
+                    stash_ref,
+                    check=False,
+                )
+                if restored.code != 0:
+                    raise GitError(
+                        "failed to restore pre-transaction submodule dirty state; "
+                        f"recover in {sub.path} with: git stash apply --index {stash_ref}"
+                    )
                 self._run_git_in(sub.path, "stash", "drop", stash_ref, check=False)
 
         self._rolled_back = True

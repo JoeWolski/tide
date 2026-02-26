@@ -101,3 +101,31 @@ def test_transaction_restores_dirty_submodule_state(tmp_path: Path) -> None:
     assert before_head == after_head
     assert "feature" not in branches
     assert after_sub_content == before_sub_content
+
+
+def test_transaction_commit_restores_preexisting_dirty_state(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run(repo, "init", "-b", "main")
+    run(repo, "config", "user.email", "t@example.com")
+    run(repo, "config", "user.name", "T")
+    (repo / "file.txt").write_text("base\n", encoding="utf-8")
+    run(repo, "add", "file.txt")
+    run(repo, "commit", "-m", "init")
+
+    (repo / "dirty.txt").write_text("before\n", encoding="utf-8")
+    before_status = run(repo, "status", "--porcelain")
+    before_stashes = run(repo, "stash", "list")
+
+    g = GitRepo(root=repo)
+    with RepoTransaction(g):
+        g.run("checkout", "-b", "feature")
+        (repo / "file.txt").write_text("feature\n", encoding="utf-8")
+        g.run("add", "file.txt")
+        g.run("commit", "-m", "feature change")
+
+    after_status = run(repo, "status", "--porcelain")
+    after_stashes = run(repo, "stash", "list")
+    assert before_status == after_status
+    assert before_stashes == after_stashes
+    assert (repo / "dirty.txt").read_text(encoding="utf-8") == "before\n"

@@ -36,6 +36,15 @@ def _conflict_mode(value: str) -> ConflictMode:
     return cast(ConflictMode, value)
 
 
+def _conflict_mode_for(obj: CliContext, override: str | None) -> ConflictMode:
+    if override is not None:
+        return _conflict_mode(override)
+    value = str(obj.config.values.get("conflict", {}).get("mode", "rollback"))
+    if value not in {"rollback", "pause", "interactive"}:
+        raise InputError(f"unsupported conflict.mode: {value}")
+    return _conflict_mode(value)
+
+
 def _emit_error(err: TideError, *, as_json: bool) -> None:
     if as_json:
         if isinstance(err, ConflictError):
@@ -101,10 +110,17 @@ def _run_mutating(obj: CliContext, fn: Callable[[], None], conflict_mode: Confli
 def _render_show(obj: CliContext) -> str:
     graph = obj.service.infer_graph()
     prs = {pr.head: pr for pr in obj.service.forge.list_prs_sync(list(graph.nodes.keys()))}
+    current = obj.repo.current_branch()
     if obj.json_output:
         payload = json.loads(render_json(graph))
         for node in payload["nodes"]:
             pr = prs.get(node)
+            node_data = graph.nodes[node]
+            payload.setdefault("node_meta", {})[node] = {
+                "local": node_data.local,
+                "remote": node_data.remote,
+                "current": node == current,
+            }
             if pr is not None:
                 payload.setdefault("prs", {})[node] = {
                     "number": pr.number,
@@ -120,9 +136,14 @@ def _render_show(obj: CliContext) -> str:
 
     def visit(node: str, prefix: str, marker: str = "") -> None:
         suffix_parts: list[str] = []
+        node_data = graph.nodes[node]
+        if node_data.local:
+            suffix_parts.append("local")
+        if node_data.remote:
+            suffix_parts.append("remote")
         if node in prs:
             suffix_parts.append(f"PR#{prs[node].number}")
-        if node == obj.repo.current_branch():
+        if node == current:
             suffix_parts.append("current")
         suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
         lines.append(f"{prefix}{node}{marker}{suffix}")
@@ -147,6 +168,8 @@ def _status_payload(obj: CliContext) -> dict[str, object]:
         rows.append(
             {
                 "branch": branch,
+                "local": graph.nodes[branch].local,
+                "remote": graph.nodes[branch].remote,
                 "parent": parent,
                 "source": None if edge is None else edge.source.value,
                 "pr": None if pr is None else pr.number,
@@ -266,10 +289,13 @@ def status(obj: CliContext) -> None:
         assert isinstance(rows, list)
         for row in rows:
             assert isinstance(row, dict)
+            location = "LR" if row["local"] and row["remote"] else "L" if row["local"] else "R"
             parent = "-" if row["parent"] is None else row["parent"]
             source = "-" if row["source"] is None else row["source"]
             pr = "-" if row["pr"] is None else row["pr"]
-            click.echo(f"{row['branch']}\tparent={parent}\tsource={source}\tpr={pr}")
+            click.echo(
+                f"{row['branch']}\tloc={location}\tparent={parent}\tsource={source}\tpr={pr}"
+            )
     except TideError as err:
         _raise(err, as_json=obj.json_output)
 
@@ -279,11 +305,11 @@ def status(obj: CliContext) -> None:
 @click.option(
     "--conflict",
     type=click.Choice(["rollback", "interactive", "pause"]),
-    default="rollback",
+    default=None,
 )
 @click.pass_obj
-def up_cmd(obj: CliContext, dirty: str | None, conflict: str) -> None:
-    conflict_mode = _conflict_mode(conflict)
+def up_cmd(obj: CliContext, dirty: str | None, conflict: str | None) -> None:
+    conflict_mode = _conflict_mode_for(obj, conflict)
 
     def run() -> None:
         graph = obj.service.infer_graph()
@@ -305,11 +331,11 @@ def up_cmd(obj: CliContext, dirty: str | None, conflict: str) -> None:
 @click.option(
     "--conflict",
     type=click.Choice(["rollback", "interactive", "pause"]),
-    default="rollback",
+    default=None,
 )
 @click.pass_obj
-def down_cmd(obj: CliContext, dirty: str | None, conflict: str) -> None:
-    conflict_mode = _conflict_mode(conflict)
+def down_cmd(obj: CliContext, dirty: str | None, conflict: str | None) -> None:
+    conflict_mode = _conflict_mode_for(obj, conflict)
 
     def run() -> None:
         graph = obj.service.infer_graph()
@@ -330,11 +356,11 @@ def down_cmd(obj: CliContext, dirty: str | None, conflict: str) -> None:
 @click.option(
     "--conflict",
     type=click.Choice(["rollback", "interactive", "pause"]),
-    default="rollback",
+    default=None,
 )
 @click.pass_obj
-def goto_cmd(obj: CliContext, target: str, dirty: str | None, conflict: str) -> None:
-    conflict_mode = _conflict_mode(conflict)
+def goto_cmd(obj: CliContext, target: str, dirty: str | None, conflict: str | None) -> None:
+    conflict_mode = _conflict_mode_for(obj, conflict)
 
     def run() -> None:
         if not obj.repo.branch_exists(target):
@@ -352,11 +378,11 @@ def goto_cmd(obj: CliContext, target: str, dirty: str | None, conflict: str) -> 
 @click.option(
     "--conflict",
     type=click.Choice(["rollback", "interactive", "pause"]),
-    default="rollback",
+    default=None,
 )
 @click.pass_obj
-def ripple_cmd(obj: CliContext, conflict: str) -> None:
-    conflict_mode = _conflict_mode(conflict)
+def ripple_cmd(obj: CliContext, conflict: str | None) -> None:
+    conflict_mode = _conflict_mode_for(obj, conflict)
 
     def run() -> None:
         root = obj.repo.current_branch()
@@ -376,11 +402,11 @@ def ripple_cmd(obj: CliContext, conflict: str) -> None:
 @click.option(
     "--conflict",
     type=click.Choice(["rollback", "interactive", "pause"]),
-    default="rollback",
+    default=None,
 )
 @click.pass_obj
-def apply_cmd(obj: CliContext, target: str, ripple: bool, conflict: str) -> None:
-    conflict_mode = _conflict_mode(conflict)
+def apply_cmd(obj: CliContext, target: str, ripple: bool, conflict: str | None) -> None:
+    conflict_mode = _conflict_mode_for(obj, conflict)
 
     def run() -> None:
         if not obj.repo.branch_exists(target):
@@ -401,17 +427,27 @@ def apply_cmd(obj: CliContext, target: str, ripple: bool, conflict: str) -> None
             patch_path = handle.name
 
         try:
-            obj.repo.run("checkout", target)
-            applied = obj.repo.run("apply", "--index", patch_path, check=False)
-            if applied.code != 0:
-                raise obj.service.conflict_from_git_failure(
-                    operation="apply",
-                    branches=[current, target],
-                    fallback_files=patch_files,
-                )
+            with tempfile.TemporaryDirectory(prefix="tide-apply-worktree-") as worktree_dir:
+                obj.repo.run("worktree", "add", worktree_dir, target)
+                try:
+                    wt_repo = GitRepo(Path(worktree_dir))
+                    applied = wt_repo.run("apply", "--index", patch_path, check=False)
+                    if applied.code != 0:
+                        files = wt_repo.conflicted_files() or patch_files
+                        raise ConflictError(
+                            operation="apply",
+                            branches=[current, target],
+                            files=files,
+                        )
+                    staged = wt_repo.run("diff", "--cached", "--name-only").stdout.strip()
+                    if staged:
+                        wt_repo.run("commit", "-m", f"apply: {current} -> {target}")
+                finally:
+                    obj.repo.run("worktree", "remove", "--force", worktree_dir, check=False)
             if ripple:
+                start = obj.repo.current_branch()
                 _ripple_from(obj, target, conflict_mode)
-            obj.repo.run("checkout", current)
+                obj.repo.run("checkout", start)
         finally:
             Path(patch_path).unlink(missing_ok=True)
 
@@ -469,7 +505,7 @@ def pr_create_cmd(
 @click.option(
     "--conflict",
     type=click.Choice(["rollback", "interactive", "pause"]),
-    default="rollback",
+    default=None,
 )
 @click.pass_obj
 def land_cmd(
@@ -477,9 +513,9 @@ def land_cmd(
     stack_selector: str | None,
     scope: str,
     mode: str,
-    conflict: str,
+    conflict: str | None,
 ) -> None:
-    conflict_mode = _conflict_mode(conflict)
+    conflict_mode = _conflict_mode_for(obj, conflict)
 
     def run() -> None:
         graph = obj.service.infer_graph()
@@ -564,11 +600,11 @@ def push_cmd(obj: CliContext) -> None:
 @click.option(
     "--conflict",
     type=click.Choice(["rollback", "interactive", "pause"]),
-    default="rollback",
+    default=None,
 )
 @click.pass_obj
-def sync_cmd(obj: CliContext, conflict: str) -> None:
-    conflict_mode = _conflict_mode(conflict)
+def sync_cmd(obj: CliContext, conflict: str | None) -> None:
+    conflict_mode = _conflict_mode_for(obj, conflict)
 
     def run() -> None:
         current = obj.repo.current_branch()

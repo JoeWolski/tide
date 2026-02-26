@@ -88,6 +88,36 @@ def test_apply_conflict_returns_json_and_rolls_back(tmp_path: Path) -> None:
     assert (repo / "f.txt").read_text(encoding="utf-8") == "line feat\n"
 
 
+def test_apply_success_uses_worktree_and_commits_target(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+
+    (repo / "f.txt").write_text("base\n", encoding="utf-8")
+    git(repo, "add", "f.txt")
+    git(repo, "commit", "-m", "base")
+
+    git(repo, "checkout", "-b", "feat")
+    (repo / "f.txt").write_text("feat\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat change")
+
+    feat_before = git(repo, "rev-parse", "feat")
+    main_before = git(repo, "rev-parse", "main")
+
+    out = run(repo, "apply", "main")
+    assert out.returncode == 0
+    assert git(repo, "rev-parse", "--abbrev-ref", "HEAD") == "feat"
+
+    feat_after = git(repo, "rev-parse", "feat")
+    main_after = git(repo, "rev-parse", "main")
+    assert feat_after == feat_before
+    assert main_after != main_before
+    assert git(repo, "show", "main:f.txt") == "feat"
+
+    worktrees = git(repo, "worktree", "list", "--porcelain")
+    assert worktrees.count("worktree ") == 1
+
+
 def test_status_json_is_deterministic(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -135,3 +165,37 @@ def test_ripple_conflict_pause_keeps_repo_in_conflicted_state(tmp_path: Path) ->
     assert (repo / ".git" / "rebase-merge").exists()
     status = git(repo, "status", "--porcelain")
     assert "UU f.txt" in status
+
+
+def test_default_conflict_mode_comes_from_config(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+
+    (repo / ".git" / "tide").mkdir(parents=True)
+    (repo / ".git" / "tide" / "config.toml").write_text(
+        '[conflict]\nmode = "pause"\n',
+        encoding="utf-8",
+    )
+
+    (repo / "f.txt").write_text("line\n", encoding="utf-8")
+    git(repo, "add", "f.txt")
+    git(repo, "commit", "-m", "base")
+
+    git(repo, "checkout", "-b", "feat1")
+    (repo / "f.txt").write_text("line feat1\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat1")
+    git(repo, "config", "branch.feat1.tide-parent", "main")
+
+    git(repo, "checkout", "-b", "feat2")
+    (repo / "f.txt").write_text("line feat2\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat2")
+    git(repo, "config", "branch.feat2.tide-parent", "feat1")
+
+    git(repo, "checkout", "main")
+    (repo / "f.txt").write_text("line main\n", encoding="utf-8")
+    git(repo, "commit", "-am", "main")
+
+    out = run(repo, "ripple", check=False)
+    assert out.returncode == 4
+    assert "repository paused in conflicted state" in out.stderr

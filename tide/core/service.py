@@ -20,9 +20,18 @@ class StackService:
     forge: LocalForgeProvider
 
     def infer_graph(self) -> StackGraph:
+        local_names = set(self.repo.list_local_branches())
+        remote_names = {
+            name for name in self.repo.list_remote_branches() if not name.endswith("/HEAD")
+        }
+        all_names = sorted(local_names | remote_names)
         branches = [
-            BranchNode(name=name, local=True, remote=False)
-            for name in self.repo.list_local_branches()
+            BranchNode(
+                name=name,
+                local=name in local_names,
+                remote=name in remote_names,
+            )
+            for name in all_names
         ]
         names = [branch.name for branch in branches]
         pr_edges: list[tuple[str, str]] = []
@@ -34,7 +43,7 @@ class StackService:
             if pr.head in names and pr.base in names:
                 pr_edges.append((pr.head, pr.base))
 
-        for branch in names:
+        for branch in sorted(local_names):
             hint = self.repo.branch_parent_hint(branch)
             if hint is not None and hint in names:
                 remote_edges.append((branch, hint))

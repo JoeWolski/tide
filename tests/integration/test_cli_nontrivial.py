@@ -199,3 +199,29 @@ def test_default_conflict_mode_comes_from_config(tmp_path: Path) -> None:
     out = run(repo, "ripple", check=False)
     assert out.returncode == 4
     assert "repository paused in conflicted state" in out.stderr
+
+
+def test_land_close_non_head_only_reports_non_head_branches(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+
+    (repo / "f.txt").write_text("base\n", encoding="utf-8")
+    git(repo, "add", "f.txt")
+    git(repo, "commit", "-m", "base")
+
+    git(repo, "checkout", "-b", "feat1")
+    (repo / "f.txt").write_text("feat1\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat1")
+    git(repo, "config", "branch.feat1.tide-parent", "main")
+
+    git(repo, "checkout", "-b", "feat2")
+    (repo / "f.txt").write_text("feat2\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat2")
+    git(repo, "config", "branch.feat2.tide-parent", "feat1")
+
+    run(repo, "pr", "create", "--stack", "feat2", "--scope", "path")
+    out = run(repo, "--json", "land", "--stack", "feat2", "--scope", "path", "--mode", "close-non-head")
+    payload = json.loads(out.stdout)
+    assert payload["head"] == "feat2"
+    assert payload["closed"] == ["feat1"]

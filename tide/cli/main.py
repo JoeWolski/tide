@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,7 @@ from tide.core.service import StackService
 from tide.core.transactions import RepoTransaction
 from tide.forge.local import LocalForgeProvider
 from tide.git.repo import GitRepo
+from tide.installer.manager import InstallerManager, UpdatePlan
 from tide.tui.render import render_json
 
 
@@ -710,6 +712,153 @@ def sync_cmd(obj: CliContext, conflict: str | None) -> None:
             click.echo(current)
 
     _run_mutating(obj, run, conflict_mode)
+
+
+@main.group(name="installer")
+def installer_group() -> None:
+    """Installer commands."""
+
+
+@installer_group.command(name="install")
+@click.option("--channel", type=click.Choice(["release", "master", "off"]), default=None)
+@click.option("--spec", default=None, help="Override install spec (pip requirement or path).")
+@click.option(
+    "--bin-dir",
+    type=click.Path(path_type=Path, file_okay=False, resolve_path=True),
+    default=None,
+)
+@click.pass_obj
+def installer_install_cmd(
+    obj: CliContext,
+    channel: str | None,
+    spec: str | None,
+    bin_dir: Path | None,
+) -> None:
+    auto_update_cfg = obj.config.values.get("auto_update", {})
+    chosen_channel = channel or str(auto_update_cfg.get("channel", "release"))
+    ttl_seconds = int(auto_update_cfg.get("ttl_seconds", 3600))
+    manager = InstallerManager.from_defaults()
+    if bin_dir is not None:
+        manager.bin_dir = bin_dir
+
+    chosen_spec = manager.resolve_spec(chosen_channel, spec)
+    plan = UpdatePlan(channel=chosen_channel, spec=chosen_spec, ttl_seconds=ttl_seconds)
+    site = manager.install_or_update(plan)
+    launcher = manager.write_launcher(channel=chosen_channel)
+    manager.update_state(channel=chosen_channel, spec=chosen_spec)
+
+    payload = {
+        "installed": True,
+        "channel": chosen_channel,
+        "spec": chosen_spec,
+        "site_packages": str(site),
+        "launcher": str(launcher),
+    }
+    if obj.json_output:
+        click.echo(json.dumps(payload, sort_keys=True))
+    else:
+        click.echo(str(launcher))
+
+
+@installer_group.command(name="update")
+@click.option("--channel", type=click.Choice(["release", "master", "off"]), default=None)
+@click.option("--spec", default=None, help="Override install spec (pip requirement or path).")
+@click.option(
+    "--bin-dir",
+    type=click.Path(path_type=Path, file_okay=False, resolve_path=True),
+    default=None,
+)
+@click.option("--force", is_flag=True, help="Ignore ttl and update immediately.")
+@click.pass_obj
+def installer_update_cmd(
+    obj: CliContext,
+    channel: str | None,
+    spec: str | None,
+    bin_dir: Path | None,
+    force: bool,
+) -> None:
+    auto_update_cfg = obj.config.values.get("auto_update", {})
+    chosen_channel = channel or str(auto_update_cfg.get("channel", "release"))
+    ttl_seconds = int(auto_update_cfg.get("ttl_seconds", 3600))
+    manager = InstallerManager.from_defaults()
+    if bin_dir is not None:
+        manager.bin_dir = bin_dir
+
+    if chosen_channel == "off" and spec is None:
+        raise InputError("auto_update.channel is off; pass --spec to run an explicit update")
+    chosen_spec = manager.resolve_spec(chosen_channel, spec)
+
+    current_ts = int(time.time())
+    due = manager.should_auto_update(now=current_ts, ttl_seconds=ttl_seconds, force=force)
+    if not due:
+        payload = {"updated": False, "reason": "ttl-not-expired", "channel": chosen_channel}
+        if obj.json_output:
+            click.echo(json.dumps(payload, sort_keys=True))
+        else:
+            click.echo("installer update skipped (ttl not expired)")
+        return
+
+    plan = UpdatePlan(channel=chosen_channel, spec=chosen_spec, ttl_seconds=ttl_seconds)
+    site = manager.install_or_update(plan)
+    launcher = manager.write_launcher(channel=chosen_channel)
+    manager.update_state(channel=chosen_channel, spec=chosen_spec, now=current_ts)
+    payload = {
+        "updated": True,
+        "channel": chosen_channel,
+        "spec": chosen_spec,
+        "site_packages": str(site),
+        "launcher": str(launcher),
+    }
+    if obj.json_output:
+        click.echo(json.dumps(payload, sort_keys=True))
+    else:
+        click.echo(str(launcher))
+
+
+@installer_group.command(name="auto-update")
+@click.option("--force", is_flag=True, help="Ignore ttl and update immediately.")
+@click.option(
+    "--bin-dir",
+    type=click.Path(path_type=Path, file_okay=False, resolve_path=True),
+    default=None,
+)
+@click.pass_obj
+def installer_auto_update_cmd(obj: CliContext, force: bool, bin_dir: Path | None) -> None:
+    channel = str(obj.config.values.get("auto_update", {}).get("channel", "release"))
+    if channel == "off":
+        payload = {"updated": False, "reason": "channel-off", "channel": channel}
+        if obj.json_output:
+            click.echo(json.dumps(payload, sort_keys=True))
+        else:
+            click.echo("installer auto-update skipped (channel off)")
+        return
+
+    ctx = click.get_current_context()
+    ctx.invoke(installer_update_cmd, channel=channel, spec=None, bin_dir=bin_dir, force=force)
+
+
+@installer_group.command(name="status")
+@click.option("--channel", type=click.Choice(["release", "master", "off"]), default=None)
+@click.option(
+    "--bin-dir",
+    type=click.Path(path_type=Path, file_okay=False, resolve_path=True),
+    default=None,
+)
+@click.pass_obj
+def installer_status_cmd(obj: CliContext, channel: str | None, bin_dir: Path | None) -> None:
+    auto_update_cfg = obj.config.values.get("auto_update", {})
+    chosen_channel = channel or str(auto_update_cfg.get("channel", "release"))
+    manager = InstallerManager.from_defaults()
+    if bin_dir is not None:
+        manager.bin_dir = bin_dir
+    payload = manager.status(chosen_channel)
+    if obj.json_output:
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+    click.echo(
+        f"channel={payload['channel']} installed={payload['installed']} "
+        f"launcher={payload['launcher']}"
+    )
 
 
 if __name__ == "__main__":

@@ -385,3 +385,16 @@ def test_show_reports_divergence_against_upstream(tmp_path: Path) -> None:
     out = run(repo, "show")
     assert out.returncode == 0
     assert "div=1/0" in out.stdout
+
+
+def test_installer_status_json_outputs_shape(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+
+    out = run(repo, "--json", "installer", "status")
+    assert out.returncode == 0
+    payload = json.loads(out.stdout)
+    assert payload["channel"] == "release"
+    assert isinstance(payload["installed"], bool)
+    assert "launcher" in payload

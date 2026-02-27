@@ -16,6 +16,7 @@ from tide.config.settings import TideConfig, load_config
 from tide.core.errors import ConflictError, InputError, TideError
 from tide.core.service import StackService
 from tide.core.transactions import RepoTransaction
+from tide.forge.github import GitHubProvider
 from tide.forge.local import LocalForgeProvider
 from tide.git.repo import GitRepo
 from tide.installer.manager import InstallerManager, UpdatePlan
@@ -36,6 +37,17 @@ ConflictMode = Literal["rollback", "pause", "interactive"]
 
 def _conflict_mode(value: str) -> ConflictMode:
     return cast(ConflictMode, value)
+
+
+def _branch_token(raw: str) -> str:
+    allowed = []
+    for ch in raw:
+        if ch.isalnum() or ch in {"-", "_"}:
+            allowed.append(ch)
+        else:
+            allowed.append("-")
+    token = "".join(allowed).strip("-")
+    return token or "stack"
 
 
 def _conflict_mode_for(obj: CliContext, override: str | None) -> ConflictMode:
@@ -591,7 +603,16 @@ def pr_create_cmd(
 @main.command(name="land")
 @click.option("--stack", "stack_selector", default=None)
 @click.option("--scope", type=click.Choice(["path", "subtree", "component"]), default="path")
-@click.option("--mode", type=click.Choice(["squash-each", "close-non-head"]), default="squash-each")
+@click.option(
+    "--mode",
+    type=click.Choice(["squash-each", "close-non-head", "queue-stack"]),
+    default="squash-each",
+)
+@click.option(
+    "--queue-provider",
+    type=click.Choice(["github-actions", "buildkite"]),
+    default="github-actions",
+)
 @click.option(
     "--conflict",
     type=click.Choice(["rollback", "interactive", "pause"]),
@@ -603,6 +624,7 @@ def land_cmd(
     stack_selector: str | None,
     scope: str,
     mode: str,
+    queue_provider: str,
     conflict: str | None,
 ) -> None:
     conflict_mode = _conflict_mode_for(obj, conflict)
@@ -614,15 +636,16 @@ def land_cmd(
         trunk = obj.config.trunk
         to_land = [branch for branch in branches if branch != trunk]
 
-        missing = obj.service.missing_prs(to_land)
-        if missing:
-            msg = (
-                f"missing PRs for branches: {', '.join(missing)}\n"
-                f"run: tide pr create --stack {selector} --scope {scope}"
-            )
-            raise InputError(msg)
+        if mode != "queue-stack":
+            missing = obj.service.missing_prs(to_land)
+            if missing:
+                msg = (
+                    f"missing PRs for branches: {', '.join(missing)}\n"
+                    f"run: tide pr create --stack {selector} --scope {scope}"
+                )
+                raise InputError(msg)
 
-        obj.service.ensure_mergeable(to_land)
+            obj.service.ensure_mergeable(to_land)
 
         if mode == "close-non-head":
             head_branch = to_land[0] if to_land else selector
@@ -634,6 +657,117 @@ def land_cmd(
                     click.echo(f"closed non-head PRs: {', '.join(closed)}")
                 else:
                     click.echo("no non-head PRs to close")
+            return
+
+        if mode == "queue-stack":
+            gh = GitHubProvider(obj.repo)
+            ordered_branches = [branch for branch in reversed(branches) if branch != trunk]
+            ordered_prs = []
+            non_mergeable: list[str] = []
+            for branch in ordered_branches:
+                pr = gh.get_open_pr_for_head(branch)
+                if pr is None:
+                    raise InputError(f"missing open GitHub PR for branch: {branch}")
+                expected_base = obj.service.parent_of(graph, branch)
+                if expected_base is not None and pr.base != expected_base:
+                    raise InputError(
+                        f"PR base mismatch for '{branch}': expected '{expected_base}', got '{pr.base}'"
+                    )
+                merge_state = gh.merge_state_status(pr.number)
+                if merge_state == "DIRTY":
+                    non_mergeable.append(branch)
+                ordered_prs.append(pr)
+            if non_mergeable:
+                raise InputError(f"non-mergeable PRs: {', '.join(sorted(non_mergeable))}")
+
+            bundle_branch = (
+                f"tide/land/{_branch_token(selector)}-{int(time.time())}"
+            )
+            with tempfile.TemporaryDirectory(prefix="tide-land-") as worktree_dir:
+                worktree_path = Path(worktree_dir)
+                obj.repo.run("worktree", "add", "-B", bundle_branch, worktree_dir, trunk)
+                wt_repo = GitRepo(root=worktree_path)
+                try:
+                    for branch in ordered_branches:
+                        merged = wt_repo.run("merge", "--squash", branch, check=False)
+                        if merged.code != 0:
+                            if conflict_mode == "rollback":
+                                wt_repo.run("merge", "--abort", check=False)
+                            raise obj.service.conflict_from_git_failure(
+                                operation="land",
+                                branches=[branch, bundle_branch],
+                            )
+                    staged = wt_repo.run("diff", "--cached", "--name-only").stdout.strip()
+                    if not staged:
+                        raise InputError("queue-stack produced no staged changes")
+                    wt_repo.run("commit", "-m", f"land stack bundle: {selector}")
+                finally:
+                    obj.repo.run("worktree", "remove", "--force", worktree_dir, check=False)
+
+            obj.repo.run("push", "-u", "origin", bundle_branch)
+            queue_note = (
+                "Buildkite-backed required checks are expected to run on this queue submission."
+                if queue_provider == "buildkite"
+                else "GitHub Actions required checks are expected to run on this queue submission."
+            )
+            body = "\n".join(
+                [
+                    f"Bundled stack landing for selector `{selector}`.",
+                    "",
+                    "Included PRs:",
+                    *[f"- #{pr.number} {pr.head} -> {pr.base}" for pr in ordered_prs],
+                    "",
+                    queue_note,
+                ]
+            )
+            bundle_pr = gh.create_pr(
+                head=bundle_branch,
+                base=trunk,
+                title=f"land stack bundle: {selector}",
+                body=body,
+            )
+            gh.enqueue_pr(bundle_pr.number)
+
+            comments_by_pr: dict[int, str] = {}
+            for idx, pr in enumerate(ordered_prs):
+                child_link = None
+                parent_link = None
+                if idx + 1 < len(ordered_prs):
+                    child_link = ordered_prs[idx + 1].url
+                if idx - 1 >= 0:
+                    parent_link = ordered_prs[idx - 1].url
+
+                parts = ["Landed as part of stack"]
+                if child_link is not None:
+                    parts.append(f"child: {child_link}")
+                if parent_link is not None:
+                    parts.append(f"parent: {parent_link}")
+                comment = ", ".join(parts)
+                comments_by_pr[pr.number] = comment
+                gh.comment_pr(pr.number, comment)
+                gh.close_pr(pr.number)
+
+            if obj.json_output:
+                click.echo(
+                    json.dumps(
+                        {
+                            "submitted": {
+                                "provider": queue_provider,
+                                "bundle_pr": bundle_pr.number,
+                                "bundle_pr_url": bundle_pr.url,
+                                "bundle_branch": bundle_branch,
+                            },
+                            "closed": [pr.number for pr in ordered_prs],
+                            "comments": comments_by_pr,
+                        },
+                        sort_keys=True,
+                    )
+                )
+            else:
+                click.echo(
+                    "submitted stack bundle "
+                    f"#{bundle_pr.number} with {len(ordered_prs)} PRs via {queue_provider}"
+                )
             return
 
         ordered = [branch for branch in reversed(branches) if branch != trunk]

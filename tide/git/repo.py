@@ -115,6 +115,11 @@ class GitRepo:
             return upstream
         return upstream.split("/", maxsplit=1)[1]
 
+    def remote_url(self, name: str = "origin") -> str | None:
+        out = self.run("remote", "get-url", name, check=False)
+        url = out.stdout.strip()
+        return url if url else None
+
     def ahead_behind(self, branch: str, upstream: str) -> tuple[int, int]:
         out = self.run("rev-list", "--left-right", "--count", f"{branch}...{upstream}")
         parts = out.stdout.strip().split()

@@ -6,10 +6,17 @@ import subprocess
 from pathlib import Path
 
 
-def run(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run(
+    repo: Path,
+    *args: str,
+    check: bool = True,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
     env["XDG_CONFIG_HOME"] = str(repo / ".xdg")
+    if env_overrides:
+        env.update(env_overrides)
     return subprocess.run(
         ["python3", "-m", "tide.cli.main", *args],
         cwd=repo,
@@ -279,6 +286,190 @@ def test_land_close_non_head_only_reports_non_head_branches(tmp_path: Path) -> N
     payload = json.loads(out.stdout)
     assert payload["head"] == "feat2"
     assert payload["closed"] == ["feat1"]
+
+
+def test_land_queue_stack_submits_one_bundle_and_closes_with_parent_child_links(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    git(repo, "remote", "add", "origin", "git@github.com:acme/tide.git")
+
+    (repo / "f.txt").write_text("base\n", encoding="utf-8")
+    git(repo, "add", "f.txt")
+    git(repo, "commit", "-m", "base")
+
+    git(repo, "checkout", "-b", "feat1")
+    (repo / "f.txt").write_text("feat1\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat1")
+    git(repo, "config", "branch.feat1.tide-parent", "main")
+
+    git(repo, "checkout", "-b", "feat2")
+    (repo / "f.txt").write_text("feat2\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat2")
+    git(repo, "config", "branch.feat2.tide-parent", "feat1")
+
+    git(repo, "checkout", "-b", "feat3")
+    (repo / "f.txt").write_text("feat3\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat3")
+    git(repo, "config", "branch.feat3.tide-parent", "feat2")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_state = tmp_path / "fake-gh-state.json"
+    fake_state.write_text(
+        json.dumps(
+            {
+                "next_pr": 10,
+                "prs": {
+                    "feat1": {
+                        "number": 1,
+                        "url": "https://github.com/acme/tide/pull/1",
+                        "head": "feat1",
+                        "base": "main",
+                        "mergeStateStatus": "CLEAN",
+                        "closed": False,
+                        "comments": [],
+                    },
+                    "feat2": {
+                        "number": 2,
+                        "url": "https://github.com/acme/tide/pull/2",
+                        "head": "feat2",
+                        "base": "feat1",
+                        "mergeStateStatus": "CLEAN",
+                        "closed": False,
+                        "comments": [],
+                    },
+                    "feat3": {
+                        "number": 3,
+                        "url": "https://github.com/acme/tide/pull/3",
+                        "head": "feat3",
+                        "base": "feat2",
+                        "mergeStateStatus": "CLEAN",
+                        "closed": False,
+                        "comments": [],
+                    },
+                },
+                "merged_auto": [],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+state_path = Path(os.environ["TIDE_FAKE_GH_STATE"])
+state = json.loads(state_path.read_text(encoding="utf-8"))
+args = sys.argv[1:]
+
+if args[:2] != ["pr", "list"] and args[:2] != ["pr", "view"] and args[:2] != ["pr", "create"] and args[:2] != ["pr", "merge"] and args[:2] != ["pr", "comment"] and args[:2] != ["pr", "close"]:
+    print("unsupported gh invocation", file=sys.stderr)
+    sys.exit(1)
+
+def arg_value(flag: str) -> str | None:
+    if flag not in args:
+        return None
+    idx = args.index(flag)
+    if idx + 1 >= len(args):
+        return None
+    return args[idx + 1]
+
+if args[:2] == ["pr", "list"]:
+    head = arg_value("--head")
+    out = []
+    pr = state["prs"].get(head)
+    if pr and not pr.get("closed"):
+        out.append(
+            {
+                "number": pr["number"],
+                "url": pr["url"],
+                "headRefName": pr["head"],
+                "baseRefName": pr["base"],
+            }
+        )
+    print(json.dumps(out))
+elif args[:2] == ["pr", "view"]:
+    number = int(args[2])
+    pr = next(v for v in state["prs"].values() if int(v["number"]) == number)
+    print(json.dumps({"mergeStateStatus": pr["mergeStateStatus"]}))
+elif args[:2] == ["pr", "create"]:
+    head = arg_value("--head")
+    base = arg_value("--base")
+    number = int(state["next_pr"])
+    state["next_pr"] = number + 1
+    state["prs"][head] = {
+        "number": number,
+        "url": f"https://github.com/acme/tide/pull/{number}",
+        "head": head,
+        "base": base,
+        "mergeStateStatus": "CLEAN",
+        "closed": False,
+        "comments": [],
+    }
+    print(state["prs"][head]["url"])
+elif args[:2] == ["pr", "merge"]:
+    state["merged_auto"].append(int(args[2]))
+elif args[:2] == ["pr", "comment"]:
+    number = int(args[2])
+    body = arg_value("--body")
+    pr = next(v for v in state["prs"].values() if int(v["number"]) == number)
+    pr["comments"].append(body)
+elif args[:2] == ["pr", "close"]:
+    number = int(args[2])
+    pr = next(v for v in state["prs"].values() if int(v["number"]) == number)
+    pr["closed"] = True
+
+state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o755)
+
+    out = run(
+        repo,
+        "--json",
+        "land",
+        "--stack",
+        "feat3",
+        "--scope",
+        "path",
+        "--mode",
+        "queue-stack",
+        "--queue-provider",
+        "buildkite",
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "TIDE_FAKE_GH_STATE": str(fake_state),
+        },
+    )
+    payload = json.loads(out.stdout)
+    assert payload["submitted"]["provider"] == "buildkite"
+    assert payload["submitted"]["bundle_pr"] == 10
+    assert payload["closed"] == [1, 2, 3]
+
+    gh_state = json.loads(fake_state.read_text(encoding="utf-8"))
+    assert gh_state["merged_auto"] == [10]
+    assert gh_state["prs"]["feat1"]["closed"] is True
+    assert gh_state["prs"]["feat2"]["closed"] is True
+    assert gh_state["prs"]["feat3"]["closed"] is True
+
+    assert gh_state["prs"]["feat1"]["comments"] == [
+        "Landed as part of stack, child: https://github.com/acme/tide/pull/2"
+    ]
+    assert gh_state["prs"]["feat2"]["comments"] == [
+        "Landed as part of stack, child: https://github.com/acme/tide/pull/3, "
+        "parent: https://github.com/acme/tide/pull/1"
+    ]
+    assert gh_state["prs"]["feat3"]["comments"] == [
+        "Landed as part of stack, parent: https://github.com/acme/tide/pull/2"
+    ]
 
 
 def test_show_includes_disconnected_components(tmp_path: Path) -> None:

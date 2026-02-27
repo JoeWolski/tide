@@ -210,7 +210,7 @@ def _ripple_from(obj: CliContext, root: str, conflict_mode: ConflictMode) -> Non
 
     for child, parent in todo:
         obj.repo.run("checkout", child)
-        if strategy in {"rebase", "cherry-pick"}:
+        if strategy == "rebase":
             out = obj.repo.run("rebase", parent, check=False)
             if out.code != 0:
                 if conflict_mode == "rollback":
@@ -219,6 +219,26 @@ def _ripple_from(obj: CliContext, root: str, conflict_mode: ConflictMode) -> Non
                     operation="ripple",
                     branches=[child, parent],
                 )
+        elif strategy == "cherry-pick":
+            rev_list = obj.repo.run(
+                "rev-list",
+                "--reverse",
+                f"{child}..{parent}",
+            ).stdout
+            commits = [
+                line.strip()
+                for line in rev_list.splitlines()
+                if line.strip()
+            ]
+            for commit in commits:
+                out = obj.repo.run("cherry-pick", commit, check=False)
+                if out.code != 0:
+                    if conflict_mode == "rollback":
+                        obj.repo.run("cherry-pick", "--abort", check=False)
+                    raise obj.service.conflict_from_git_failure(
+                        operation="ripple",
+                        branches=[child, parent],
+                    )
         elif strategy == "merge":
             out = obj.repo.run("merge", "--no-edit", parent, check=False)
             if out.code != 0:

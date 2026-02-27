@@ -17,13 +17,19 @@ Run:
 make readme-transcript
 ```
 
+Fast local iteration (reuses existing Gitea container/data):
+
+```bash
+make readme-transcript-fast
+```
+
 What the utility does:
 
 1. Starts a fresh local Gitea container.
 2. Creates `tideadmin/tide-readme-demo` via Gitea API.
 3. Initializes a real git repo with `origin` pointed at that Gitea server.
 4. Executes the scenario with `tide <command> ...` (never `python -m tide...`).
-5. Captures output and exit codes and updates the generated block below.
+5. Captures real command output, validates expected exit behavior, and updates the generated block below.
 
 Direct script usage:
 
@@ -34,6 +40,7 @@ Direct script usage:
 Useful options:
 
 - `--keep-container`: keep Gitea running for debugging.
+- `--reuse-container`: reuse existing named container/data to reduce rerun time.
 - `--print-only`: emit generated transcript to stdout without editing README.
 - `--workspace /workspace/tmp/tide-readme`: control scratch directory.
 
@@ -54,12 +61,10 @@ main (local, current)
   origin/main* (remote)
 
 origin/main (remote)
-[exit 0]
 
 $ tide status
 main	loc=L	parent=-	source=-	pr=-
 origin/main	loc=R	parent=main	source=heuristic	pr=-
-[exit 0]
 ```
 
 ## Situation: Create New Stack Entries (`add`)
@@ -67,11 +72,9 @@ origin/main	loc=R	parent=main	source=heuristic	pr=-
 ```bash
 $ tide add api
 local/stack/api
-[exit 0]
 
 $ tide add tests
 local/stack/tests
-[exit 0]
 ```
 
 ## Situation: Navigate Between Parent/Child (`up`, `down`, `goto`, `checkout`)
@@ -79,19 +82,15 @@ local/stack/tests
 ```bash
 $ tide up
 local/stack/api
-[exit 0]
 
 $ tide down
 multiple child branches from 'local/stack/api': local/stack/tests, origin/main; use tide goto
-[exit 6]
 
 $ tide goto main
 main
-[exit 0]
 
 $ tide checkout local/stack/api
 local/stack/api
-[exit 0]
 ```
 
 ## Situation: Push Stack Entries To Server (`push`) And Inspect Updated State (`show`)
@@ -99,7 +98,6 @@ local/stack/api
 ```bash
 $ tide push
 local/stack/api
-[exit 0]
 ```
 
 `show` immediately after server-affecting command:
@@ -123,7 +121,6 @@ local/stack/tests (local)
 origin/local/stack/api (remote)
 
 origin/main (remote)
-[exit 0]
 ```
 
 ### Push `local/stack/tests`
@@ -131,7 +128,6 @@ origin/main (remote)
 ```bash
 $ tide push
 local/stack/tests
-[exit 0]
 ```
 
 `show` immediately after server-affecting command:
@@ -158,7 +154,6 @@ origin/local/stack/api (remote)
 origin/local/stack/tests (remote)
 
 origin/main (remote)
-[exit 0]
 ```
 
 ## Situation: Propagate Parent Changes Upward (`ripple`)
@@ -166,7 +161,6 @@ origin/main (remote)
 ```bash
 $ tide ripple
 local/stack/api
-[exit 0]
 
 $ tide show
 main (local)
@@ -186,7 +180,6 @@ origin/local/stack/api (remote)
 origin/local/stack/tests (remote)
 
 origin/main (remote)
-[exit 0]
 ```
 
 ## Situation: Apply Current Branch Diff To Another Stack Entry (`apply`)
@@ -194,11 +187,9 @@ origin/main (remote)
 ```bash
 $ tide checkout local/stack/tests
 local/stack/tests
-[exit 0]
 
 $ tide apply local/stack/api
 local/stack/tests -> local/stack/api
-[exit 0]
 
 $ tide show
 main (local)
@@ -218,7 +209,6 @@ origin/local/stack/api (remote)
 origin/local/stack/tests (remote)
 
 origin/main (remote)
-[exit 0]
 ```
 
 ## Situation: Land Fails When PRs Are Missing (`land` validation)
@@ -227,11 +217,9 @@ origin/main (remote)
 $ tide land --stack local/stack/tests --scope path
 missing PRs for branches: local/stack/api, local/stack/tests
 run: tide pr create --stack local/stack/tests --scope path
-[exit 2]
 
 $ tide --json land --stack local/stack/tests --scope path
 {"error": "inputerror", "message": "missing PRs for branches: local/stack/api, local/stack/tests\nrun: tide pr create --stack local/stack/tests --scope path"}
-[exit 2]
 ```
 
 ## Situation: Create Missing PRs For Stack Path (`pr create`)
@@ -240,7 +228,6 @@ $ tide --json land --stack local/stack/tests --scope path
 $ tide pr create --stack local/stack/tests --scope path
 #1 local/stack/api -> main
 #2 local/stack/tests -> local/stack/api
-[exit 0]
 
 $ tide show
 main (local)
@@ -260,11 +247,9 @@ origin/local/stack/api (remote)
 origin/local/stack/tests (remote)
 
 origin/main (remote)
-[exit 0]
 
 $ tide --json status
 {"branches": [{"branch": "local/stack/api", "local": true, "parent": "main", "pr": 1, "remote": false, "source": "pr"}, {"branch": "local/stack/tests", "local": true, "parent": "local/stack/api", "pr": 2, "remote": false, "source": "pr"}, {"branch": "main", "local": true, "parent": null, "pr": null, "remote": false, "source": null}, {"branch": "origin/local/stack/api", "local": false, "parent": "main", "pr": null, "remote": true, "source": "heuristic"}, {"branch": "origin/local/stack/tests", "local": false, "parent": "main", "pr": null, "remote": true, "source": "heuristic"}, {"branch": "origin/main", "local": false, "parent": "main", "pr": null, "remote": true, "source": "heuristic"}]}
-[exit 0]
 ```
 
 ## Situation: Land Stack Path (`land`) Then Push Trunk (`push`)
@@ -272,7 +257,6 @@ $ tide --json status
 ```bash
 $ tide land --stack local/stack/tests --scope path
 landed 2 branches onto main
-[exit 0]
 
 $ tide show
 main (local, current, div=1/0)
@@ -291,11 +275,9 @@ local/stack/tests (local, PR#2)
 origin/local/stack/api (remote)
 
 origin/local/stack/tests (remote)
-[exit 0]
 
 $ tide push
 main
-[exit 0]
 
 $ tide show
 main (local, current)
@@ -313,7 +295,6 @@ local/stack/api (local, PR#1)
 local/stack/tests (local, PR#2)
 
 origin/main (remote)
-[exit 0]
 ```
 
 ## Situation: Sync Local Branch With Updated Remote (`sync`)
@@ -321,7 +302,6 @@ origin/main (remote)
 ```bash
 $ tide sync
 main
-[exit 0]
 
 $ tide show
 main (local, current)
@@ -339,7 +319,6 @@ local/stack/api (local, PR#1)
 local/stack/tests (local, PR#2)
 
 origin/main (remote)
-[exit 0]
 ```
 
 ## Situation: Conflict Mode Demonstration (`--conflict=pause`)
@@ -347,7 +326,6 @@ origin/main (remote)
 ```bash
 $ tide checkout local/conflict
 local/conflict
-[exit 0]
 
 $ tide apply main --conflict=pause
 conflict detected; repository paused in conflicted state (resolve manually)
@@ -356,7 +334,6 @@ operation: apply
 branches: local/conflict, main
 files: app.txt
 rerun: tide apply --conflict=pause
-[exit 4]
 ```
 
 ## Situation: Machine-Readable Graph And Non-Interactive Flags
@@ -364,15 +341,12 @@ rerun: tide apply --conflict=pause
 ```bash
 $ tide checkout main
 main
-[exit 0]
 
 $ tide --json show
-{"edges": [{"child": "local/stack/tests", "parent": "local/stack/api", "source": "pr"}, {"child": "local/stack/api", "parent": "main", "source": "pr"}, {"child": "local/conflict", "parent": "origin/main", "source": "heuristic"}], "node_meta": {"local/conflict": {"ahead": 0, "behind": 0, "current": false, "local": true, "remote": false}, "local/stack/api": {"ahead": 0, "behind": 0, "current": false, "local": true, "remote": false}, "local/stack/tests": {"ahead": 0, "behind": 0, "current": false, "local": true, "remote": false}, "main": {"ahead": 1, "behind": 0, "current": true, "local": true, "remote": false}, "origin/local/stack/api": {"ahead": 0, "behind": 0, "current": false, "local": false, "remote": true}, "origin/local/stack/tests": {"ahead": 0, "behind": 0, "current": false, "local": false, "remote": true}, "origin/main": {"ahead": 0, "behind": 0, "current": false, "local": false, "remote": true}}, "nodes": ["local/conflict", "local/stack/api", "local/stack/tests", "main", "origin/local/stack/api", "origin/local/stack/tests", "origin/main"], "prs": {"local/stack/api": {"base": "main", "checks": null, "draft": true, "mergeable": null, "number": 1, "reviews": null}, "local/stack/tests": {"base": "local/stack/api", "checks": null, "draft": true, "mergeable": null, "number": 2, "reviews": null}}}
-[exit 0]
+{"edges": [{"child": "local/stack/tests", "parent": "local/stack/api", "source": "pr"}, {"child": "local/stack/api", "parent": "main", "source": "pr"}], "node_meta": {"local/stack/api": {"ahead": 0, "behind": 0, "current": false, "local": true, "remote": false}, "local/stack/tests": {"ahead": 0, "behind": 0, "current": false, "local": true, "remote": false}, "main": {"ahead": 1, "behind": 0, "current": true, "local": true, "remote": false}, "origin/local/stack/api": {"ahead": 0, "behind": 0, "current": false, "local": false, "remote": true}, "origin/local/stack/tests": {"ahead": 0, "behind": 0, "current": false, "local": false, "remote": true}, "origin/main": {"ahead": 0, "behind": 0, "current": false, "local": false, "remote": true}}, "nodes": ["local/stack/api", "local/stack/tests", "main", "origin/local/stack/api", "origin/local/stack/tests", "origin/main"], "prs": {"local/stack/api": {"base": "main", "checks": null, "draft": true, "mergeable": null, "number": 1, "reviews": null}, "local/stack/tests": {"base": "local/stack/api", "checks": null, "draft": true, "mergeable": null, "number": 2, "reviews": null}}}
 
 $ tide --yes --json status
-{"branches": [{"branch": "local/conflict", "local": true, "parent": "origin/main", "pr": null, "remote": false, "source": "heuristic"}, {"branch": "local/stack/api", "local": true, "parent": "main", "pr": 1, "remote": false, "source": "pr"}, {"branch": "local/stack/tests", "local": true, "parent": "local/stack/api", "pr": 2, "remote": false, "source": "pr"}, {"branch": "main", "local": true, "parent": null, "pr": null, "remote": false, "source": null}, {"branch": "origin/local/stack/api", "local": false, "parent": null, "pr": null, "remote": true, "source": null}, {"branch": "origin/local/stack/tests", "local": false, "parent": null, "pr": null, "remote": true, "source": null}, {"branch": "origin/main", "local": false, "parent": null, "pr": null, "remote": true, "source": null}]}
-[exit 0]
+{"branches": [{"branch": "local/stack/api", "local": true, "parent": "main", "pr": 1, "remote": false, "source": "pr"}, {"branch": "local/stack/tests", "local": true, "parent": "local/stack/api", "pr": 2, "remote": false, "source": "pr"}, {"branch": "main", "local": true, "parent": null, "pr": null, "remote": false, "source": null}, {"branch": "origin/local/stack/api", "local": false, "parent": null, "pr": null, "remote": true, "source": null}, {"branch": "origin/local/stack/tests", "local": false, "parent": null, "pr": null, "remote": true, "source": null}, {"branch": "origin/main", "local": false, "parent": null, "pr": null, "remote": true, "source": null}]}
 ```
 
 <!-- tide-readme-transcript:end -->

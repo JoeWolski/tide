@@ -63,6 +63,17 @@ def _run(
     return proc
 
 
+def _container_status(name: str) -> str | None:
+    inspect = _run(
+        ["docker", "inspect", "-f", "{{.State.Status}}", name],
+        check=False,
+    )
+    if inspect.returncode != 0:
+        return None
+    status = inspect.stdout.strip()
+    return status if status else None
+
+
 def _wait_for_gitea(base_urls: list[str], *, timeout_seconds: int = 120) -> str:
     if not base_urls:
         raise RuntimeError("no Gitea base URLs supplied")
@@ -166,7 +177,6 @@ def _format_block(results: list[CommandResult]) -> str:
         payload = result.output.rstrip("\n")
         if payload:
             lines.extend(payload.splitlines())
-        lines.append(f"[exit {result.code}]")
     lines.append("```")
     return "\n".join(lines)
 
@@ -349,6 +359,8 @@ def _generate_transcript(
             (["apply", "main", "--conflict=pause"], {4}),
         ]
     )
+    _git(demo_repo, "checkout", "main", env=env)
+    _git(demo_repo, "branch", "-D", "local/conflict", env=env)
 
     add_heading("## Situation: Machine-Readable Graph And Non-Interactive Flags")
     add_commands(
@@ -417,6 +429,11 @@ def main() -> int:
         help="Leave Gitea container running for debugging",
     )
     parser.add_argument(
+        "--reuse-container",
+        action="store_true",
+        help="Reuse an existing named Gitea container and persisted data for faster reruns",
+    )
+    parser.add_argument(
         "--print-only",
         action="store_true",
         help="Print generated transcript to stdout without editing README",
@@ -431,10 +448,24 @@ def main() -> int:
     readme_path = args.readme if args.readme.is_absolute() else (repo_root / args.readme)
     workspace = args.workspace
 
-    if workspace.exists():
-        shutil.rmtree(workspace)
-    (workspace / "gitea-data").mkdir(parents=True, exist_ok=True)
     demo_repo = workspace / "demo-repo"
+    gitea_data = workspace / "gitea-data"
+    xdg_home = workspace / ".xdg"
+    fake_home = workspace / ".home"
+
+    if args.reuse_container:
+        workspace.mkdir(parents=True, exist_ok=True)
+        gitea_data.mkdir(parents=True, exist_ok=True)
+        if demo_repo.exists():
+            shutil.rmtree(demo_repo)
+        if xdg_home.exists():
+            shutil.rmtree(xdg_home)
+        if fake_home.exists():
+            shutil.rmtree(fake_home)
+    else:
+        if workspace.exists():
+            shutil.rmtree(workspace)
+        gitea_data.mkdir(parents=True, exist_ok=True)
     demo_repo.mkdir(parents=True, exist_ok=True)
 
     container = args.container_name
@@ -444,36 +475,68 @@ def main() -> int:
     repo_name = "tide-readme-demo"
 
     cleanup_needed = True
-    _run(["docker", "rm", "-f", container], check=False)
-    run_cmd = [
-        "docker",
-        "run",
-        "--detach",
-        "--name",
-        container,
-        "--publish",
-        f"127.0.0.1:{args.gitea_port}:3000",
-        "--volume",
-        f"{workspace / 'gitea-data'}:/data",
-        "--env",
-        "USER_UID=1000",
-        "--env",
-        "USER_GID=1000",
-        "--env",
-        "GITEA__security__INSTALL_LOCK=true",
-        "--env",
-        "GITEA__service__DISABLE_REGISTRATION=true",
-        "--env",
-        "GITEA__server__ROOT_URL=http://127.0.0.1:3000/",
-        "--env",
-        "GITEA__server__DOMAIN=127.0.0.1",
-        "--env",
-        "GITEA__server__HTTP_PORT=3000",
-        args.gitea_image,
-    ]
-    try:
+    existing_status = _container_status(container)
+    if args.reuse_container:
+        if existing_status is None:
+            run_cmd = [
+                "docker",
+                "run",
+                "--detach",
+                "--name",
+                container,
+                "--publish",
+                f"127.0.0.1:{args.gitea_port}:3000",
+                "--volume",
+                f"{gitea_data}:/data",
+                "--env",
+                "USER_UID=1000",
+                "--env",
+                "USER_GID=1000",
+                "--env",
+                "GITEA__security__INSTALL_LOCK=true",
+                "--env",
+                "GITEA__service__DISABLE_REGISTRATION=true",
+                "--env",
+                "GITEA__server__ROOT_URL=http://127.0.0.1:3000/",
+                "--env",
+                "GITEA__server__DOMAIN=127.0.0.1",
+                "--env",
+                "GITEA__server__HTTP_PORT=3000",
+                args.gitea_image,
+            ]
+            _run(run_cmd, check=True)
+        elif existing_status != "running":
+            _run(["docker", "start", container], check=True)
+    else:
+        _run(["docker", "rm", "-f", container], check=False)
+        run_cmd = [
+            "docker",
+            "run",
+            "--detach",
+            "--name",
+            container,
+            "--publish",
+            f"127.0.0.1:{args.gitea_port}:3000",
+            "--volume",
+            f"{gitea_data}:/data",
+            "--env",
+            "USER_UID=1000",
+            "--env",
+            "USER_GID=1000",
+            "--env",
+            "GITEA__security__INSTALL_LOCK=true",
+            "--env",
+            "GITEA__service__DISABLE_REGISTRATION=true",
+            "--env",
+            "GITEA__server__ROOT_URL=http://127.0.0.1:3000/",
+            "--env",
+            "GITEA__server__DOMAIN=127.0.0.1",
+            "--env",
+            "GITEA__server__HTTP_PORT=3000",
+            args.gitea_image,
+        ]
         _run(run_cmd, check=True)
-
+    try:
         inspect = _run(
             [
                 "docker",
@@ -554,8 +617,8 @@ def main() -> int:
         env["GIT_AUTHOR_EMAIL"] = "tide-readme@example.com"
         env["GIT_COMMITTER_NAME"] = "Tide README Bot"
         env["GIT_COMMITTER_EMAIL"] = "tide-readme@example.com"
-        env["XDG_CONFIG_HOME"] = str(workspace / ".xdg")
-        env["HOME"] = str(workspace / ".home")
+        env["XDG_CONFIG_HOME"] = str(xdg_home)
+        env["HOME"] = str(fake_home)
         env["TERM"] = "dumb"
 
         _git(demo_repo, "init", "-b", "main", env=env)

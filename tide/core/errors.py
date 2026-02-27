@@ -44,5 +44,9 @@ class ForgeError(TideError):
     exit_code = 5
 
 
+class InstallError(TideError):
+    exit_code = 5
+
+
 class AmbiguityError(TideError):
     exit_code = 6

@@ -10,4 +10,4 @@
 ## README PR Requirements
 
 - For every PR that updates `README.md`, append a `## New README` section to the bottom of the PR body.
-- The `## New README` section must include the full updated `README.md` contents.
+- The `## New README` section must include the full updated `README.md` contents as rendered Markdown (no fenced code block and no raw Markdown wrapper).

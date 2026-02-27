@@ -310,6 +310,40 @@ def test_show_includes_disconnected_components(tmp_path: Path) -> None:
     assert "lonely" in rendered
 
 
+def test_show_renders_ascii_tree_connectors(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+
+    (repo / "f.txt").write_text("base\n", encoding="utf-8")
+    git(repo, "add", "f.txt")
+    git(repo, "commit", "-m", "base")
+
+    git(repo, "checkout", "-b", "feat1")
+    (repo / "f.txt").write_text("feat1\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat1")
+    git(repo, "config", "branch.feat1.tide-parent", "main")
+
+    git(repo, "checkout", "-b", "feat3")
+    (repo / "f.txt").write_text("feat3\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat3")
+    git(repo, "config", "branch.feat3.tide-parent", "feat1")
+
+    git(repo, "checkout", "main")
+    git(repo, "checkout", "-b", "feat2")
+    (repo / "g.txt").write_text("feat2\n", encoding="utf-8")
+    git(repo, "add", "g.txt")
+    git(repo, "commit", "-m", "feat2")
+    git(repo, "config", "branch.feat2.tide-parent", "main")
+    git(repo, "checkout", "main")
+
+    out = run(repo, "show")
+    assert out.returncode == 0
+    assert "|-- feat1 (local)" in out.stdout
+    assert "|   `-- feat3 (local)" in out.stdout
+    assert "`-- feat2 (local)" in out.stdout
+
+
 def test_pr_create_supports_head_pr_selector_and_templates(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

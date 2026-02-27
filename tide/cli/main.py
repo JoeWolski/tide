@@ -149,8 +149,9 @@ def _render_show(obj: CliContext) -> str:
     children = graph.children()
     trunk = obj.config.trunk
     lines: list[str] = []
+    seen: set[str] = set()
 
-    def visit(node: str, prefix: str, marker: str = "") -> None:
+    def node_line(node: str, marker: str) -> str:
         suffix_parts: list[str] = []
         node_data = graph.nodes[node]
         if node_data.local:
@@ -170,18 +171,31 @@ def _render_show(obj: CliContext) -> str:
             if ahead or behind:
                 suffix_parts.append(f"div={ahead}/{behind}")
         suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
-        lines.append(f"{prefix}{node}{marker}{suffix}")
-        for edge in children.get(node, []):
-            edge_marker = "*" if edge.source.value == "heuristic" else ""
-            visit(edge.child, prefix + "  ", edge_marker)
+        return f"{node}{marker}{suffix}"
 
-    seen: set[str] = set()
-
-    def visit_once(node: str, prefix: str, marker: str = "") -> None:
+    def visit(node: str, prefix: str, marker: str, *, is_root: bool, is_last: bool) -> None:
         if node in seen:
             return
         seen.add(node)
-        visit(node, prefix, marker)
+
+        if is_root:
+            lines.append(node_line(node, marker))
+            child_prefix = ""
+        else:
+            connector = "`-- " if is_last else "|-- "
+            lines.append(f"{prefix}{connector}{node_line(node, marker)}")
+            child_prefix = prefix + ("    " if is_last else "|   ")
+
+        child_edges = [edge for edge in children.get(node, []) if edge.child not in seen]
+        for idx, edge in enumerate(child_edges):
+            edge_marker = "*" if edge.source.value == "heuristic" else ""
+            visit(
+                edge.child,
+                child_prefix,
+                edge_marker,
+                is_root=False,
+                is_last=idx == len(child_edges) - 1,
+            )
 
     roots = sorted(name for name in graph.nodes if name not in graph.parents)
     ordered_roots: list[str] = []
@@ -189,13 +203,15 @@ def _render_show(obj: CliContext) -> str:
         ordered_roots.append(trunk)
     ordered_roots.extend(root for root in roots if root != trunk)
     for node in sorted(graph.nodes):
-        if node not in seen and node not in ordered_roots:
+        if node not in ordered_roots:
             ordered_roots.append(node)
 
-    for idx, root in enumerate(ordered_roots):
-        if idx > 0:
+    for root in ordered_roots:
+        if root in seen:
+            continue
+        if lines:
             lines.append("")
-        visit_once(root, "")
+        visit(root, "", "", is_root=True, is_last=True)
     return "\n".join(lines)
 
 

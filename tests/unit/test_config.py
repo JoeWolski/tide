@@ -50,6 +50,8 @@ def test_env_overrides_repo(tmp_path: Path, monkeypatch) -> None:
         ('[forge]\nprovider = "gitlab"\n', "forge.provider"),
         ('[forge.github]\ntransport = "http"\n', "forge.github.transport"),
         ('[forge.github]\nauth = "token-file"\n', "forge.github.auth"),
+        ('[forge.github]\ntitle_template = "no-token"\n', "forge.github.title_template"),
+        ('[forge.github]\nbody_template = "no-token"\n', "forge.github.body_template"),
     ],
 )
 def test_load_config_rejects_invalid_values(

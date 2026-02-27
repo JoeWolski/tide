@@ -39,6 +39,16 @@ class LocalForgeProvider:
                         mergeable=(
                             None if item.get("mergeable") is None else bool(item.get("mergeable"))
                         ),
+                        checks_summary=(
+                            None
+                            if item.get("checks_summary") is None
+                            else str(item.get("checks_summary"))
+                        ),
+                        review_summary=(
+                            None
+                            if item.get("review_summary") is None
+                            else str(item.get("review_summary"))
+                        ),
                     )
                 )
             except KeyError:

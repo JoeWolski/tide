@@ -95,3 +95,31 @@ class GitRepo:
 
     def branch_exists(self, branch: str) -> bool:
         return self.run("show-ref", "--verify", f"refs/heads/{branch}", check=False).code == 0
+
+    def branch_upstream(self, branch: str) -> str | None:
+        out = self.run(
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            f"{branch}@{{upstream}}",
+            check=False,
+        )
+        upstream = out.stdout.strip()
+        return upstream or None
+
+    def upstream_branch_name(self, branch: str) -> str | None:
+        upstream = self.branch_upstream(branch)
+        if upstream is None:
+            return None
+        if "/" not in upstream:
+            return upstream
+        return upstream.split("/", maxsplit=1)[1]
+
+    def ahead_behind(self, branch: str, upstream: str) -> tuple[int, int]:
+        out = self.run("rev-list", "--left-right", "--count", f"{branch}...{upstream}")
+        parts = out.stdout.strip().split()
+        if len(parts) != 2:
+            raise GitError(f"unexpected rev-list output for divergence: {out.stdout!r}")
+        ahead = int(parts[0])
+        behind = int(parts[1])
+        return ahead, behind

@@ -14,6 +14,8 @@ class PullRequest:
     title: str
     draft: bool
     mergeable: bool | None = None
+    checks_summary: str | None = None
+    review_summary: str | None = None
 
 
 class ForgeTransport(Protocol):

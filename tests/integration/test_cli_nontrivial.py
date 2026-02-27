@@ -308,3 +308,80 @@ def test_show_includes_disconnected_components(tmp_path: Path) -> None:
     assert "main" in rendered
     assert "feat1" in rendered
     assert "lonely" in rendered
+
+
+def test_pr_create_supports_head_pr_selector_and_templates(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+
+    (repo / ".git" / "tide").mkdir(parents=True)
+    (repo / ".git" / "tide" / "config.toml").write_text(
+        '[forge.github]\n'
+        'title_template = "[$BASE] $HEAD"\n'
+        'body_template = "body: $HEAD -> $BASE"\n',
+        encoding="utf-8",
+    )
+
+    (repo / "f.txt").write_text("base\n", encoding="utf-8")
+    git(repo, "add", "f.txt")
+    git(repo, "commit", "-m", "base")
+
+    git(repo, "checkout", "-b", "feat1")
+    (repo / "f.txt").write_text("feat1\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat1")
+    git(repo, "config", "branch.feat1.tide-parent", "main")
+
+    git(repo, "checkout", "-b", "feat2")
+    (repo / "f.txt").write_text("feat2\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat2")
+    git(repo, "config", "branch.feat2.tide-parent", "feat1")
+
+    run(repo, "pr", "create", "--stack", "feat2", "--scope", "path")
+    prs_before = json.loads((repo / ".git" / "tide" / "prs.json").read_text(encoding="utf-8"))
+    assert len(prs_before) == 2
+    assert prs_before[0]["title"] == "[main] feat1"
+    assert prs_before[1]["title"] == "[feat1] feat2"
+
+    git(repo, "checkout", "-b", "feat3")
+    (repo / "f.txt").write_text("feat3\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat3")
+    git(repo, "config", "branch.feat3.tide-parent", "feat2")
+
+    out = run(
+        repo,
+        "--json",
+        "pr",
+        "create",
+        "--stack",
+        "ignored",
+        "--scope",
+        "subtree",
+        "--head-pr",
+        "2",
+    )
+    payload = json.loads(out.stdout)
+    assert len(payload["created"]) == 1
+    assert payload["created"][0]["head"] == "feat3"
+
+
+def test_show_reports_divergence_against_upstream(tmp_path: Path) -> None:
+    bare = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(bare)], check=True)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    git(repo, "remote", "add", "origin", str(bare))
+
+    (repo / "f.txt").write_text("base\n", encoding="utf-8")
+    git(repo, "add", "f.txt")
+    git(repo, "commit", "-m", "base")
+    git(repo, "push", "-u", "origin", "main")
+
+    (repo / "f.txt").write_text("ahead\n", encoding="utf-8")
+    git(repo, "commit", "-am", "ahead")
+
+    out = run(repo, "show")
+    assert out.returncode == 0
+    assert "div=1/0" in out.stdout

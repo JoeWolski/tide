@@ -2,325 +2,425 @@
 
 `tide` is a deterministic CLI for stacked branch and PR workflows.
 
-This README is a practical, command-first walkthrough that uses a real local Gitea server in Docker and shows actual command output captured in this environment.
+This README is user-focused: every section is about running Tide in a concrete situation. It assumes your repository, remote, and forge auth are already set up.
 
-## What This README Demonstrates
+## Mental Model
 
-- Spinning up a local forge (`gitea/gitea:1.22.6`) in Docker
-- Creating an admin user and API token
-- Creating a repository through the Gitea API
-- Pushing a real stacked branch sequence with Git
-- Creating stacked PRs through the Gitea API
-- Querying PR state and common auth failure responses
-- Running `tide show` / `tide --json status` against that repo
+Tide infers your stack from real git/remote/PR state. It does not require Tide metadata to function.
 
-## Prerequisites
+- Local stack state: your local branches and HEAD.
+- Remote stack state: remote-tracking branches and upstream relationships.
+- Project/PR state: pull requests on your forge.
 
-- Docker daemon reachable from your shell
-- `git`, `curl`, `python3`
-- This repository checked out at `/workspace/tide` (or adapt paths)
+Inference priority:
 
-## 1) Start Local Gitea
+1. PR metadata (head -> base)
+2. Remote tracking relationships
+3. Git ancestry heuristics (marked in UI)
+
+## Default Behavior You Can Rely On
+
+- Mutating commands are transactional.
+- On conflict, default behavior is full rollback.
+- Deterministic exit codes are used for scripting.
+- `--json` and `--yes` are available for non-interactive automation.
+
+Exit codes:
+
+- `0`: success
+- `2`: input/config error
+- `3`: git failure
+- `4`: conflict
+- `5`: forge/auth/network failure
+- `6`: ambiguous operation requiring explicit flags
+
+## Situation: You Need To Understand The Current Stack
+
+Assumed state:
+
+- Local branches exist (`main`, feature branches).
+- Some branches may only exist remotely.
+- PRs may be partially created.
 
 Run:
 
 ```bash
-docker rm -f tide-gitea-demo >/dev/null 2>&1 || true
-mkdir -p /workspace/tmp/gitea-data
-docker run -d --name tide-gitea-demo \
-  -p 3001:3000 -p 2222:22 \
-  -v /workspace/tmp/gitea-data:/data \
-  -e USER_UID=1000 -e USER_GID=1000 \
-  -e GITEA__security__INSTALL_LOCK=true \
-  -e GITEA__service__DISABLE_REGISTRATION=true \
-  -e GITEA__server__DOMAIN=localhost \
-  -e GITEA__server__ROOT_URL=http://localhost:3001/ \
-  gitea/gitea:1.22.6
+tide show
+tide --json show
+tide status
+tide --json status
 ```
 
-Actual output (first run):
+Use this when:
 
-```text
-Unable to find image 'gitea/gitea:1.22.6' locally
-1.22.6: Pulling from gitea/gitea
-...
-Status: Downloaded newer image for gitea/gitea:1.22.6
-09a4575ef0d34b4bb18a63548529b0ac4dea6c93808c644a0b0e8de0b4087ca9
-```
+- You need the full tree view before rebasing or landing.
+- You want scriptable flat output for CI or bots.
+- You need to verify local/remote divergence and PR mapping.
 
-Get the daemon-visible container IP and verify API health:
+## Situation: You Need A New Stack Entry From Current Branch
+
+Assumed state:
+
+- You are on a branch that belongs to a stack.
+- You want a child branch for the next change.
+
+Run:
 
 ```bash
-IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' tide-gitea-demo)
-echo "$IP"
-curl -sS "http://$IP:3000/api/v1/version" | python3 -m json.tool
+tide add "feature-name"
 ```
 
-Actual output:
-
-```text
-172.17.0.11
-{
-    "version": "1.22.6"
-}
-```
-
-## 2) Create Admin User and API Token
-
-Create admin user (idempotent note: reruns may report user already exists):
+Dirty working tree options:
 
 ```bash
-docker exec -u git tide-gitea-demo sh -c \
-  "gitea admin user create \
-    --username tideadmin \
-    --password 'tidepass123' \
-    --email tideadmin@example.com \
-    --admin \
-    --must-change-password=false"
+tide add "feature-name" --dirty=fail
+tide add "feature-name" --dirty=stash
+tide add "feature-name" --dirty=move
 ```
 
-Actual output:
+Use this when:
 
-```text
-New user 'tideadmin' has been successfully created!
+- You want deterministic branch creation with configured naming.
+- You need explicit dirty-state behavior instead of implicit stash habits.
+
+## Situation: Your Branch Naming Must Follow Team Rules
+
+Assumed state:
+
+- Team branch naming conventions are enforced.
+
+Configure template:
+
+```toml
+[naming]
+branch_template = "$USER/$STACK/$FEATURE"
 ```
 
-Generate a token for API calls:
+Supported tokens:
+
+- `$USER`
+- `$STACK`
+- `$FEATURE` (required)
+- `$DATE`
+- `$N`
+- `$BASE`
+
+Use this when:
+
+- You want predictable branch names across teammates and automation.
+
+## Situation: You Need To Move Around A Stack Safely
+
+Assumed state:
+
+- You are on one stack entry and need to move to parent/child/explicit node.
+- Your working tree may be dirty.
+
+Run:
 
 ```bash
-TOKEN=$(docker exec -u git tide-gitea-demo sh -c \
-  "gitea admin user generate-access-token \
-    --username tideadmin \
-    --token-name readme-demo \
-    --scopes all \
-    --raw")
-echo "$TOKEN"
+tide up
+tide down
+tide goto <branch>
 ```
 
-Actual output:
-
-```text
-1c9e47d3dc1e214b0deceb403b443467fefefbe2
-```
-
-## 3) Create a Repo Through Gitea API
+With explicit behavior:
 
 ```bash
-curl -sS \
-  -H "Content-Type: application/json" \
-  -H "Authorization: token $TOKEN" \
-  -d '{"name":"stack-demo","default_branch":"main","private":false}' \
-  "http://$IP:3000/api/v1/user/repos" | \
-python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps({"id":d["id"],"full_name":d["full_name"],"default_branch":d["default_branch"]}, indent=2))'
+tide up --dirty=fail --conflict=rollback
+tide down --dirty=stash --conflict=pause
+tide goto <branch> --dirty=move --conflict=interactive
 ```
 
-Actual output:
+Use this when:
+
+- You switch between stacked diffs frequently.
+- You want predictable behavior if local changes exist.
+
+## Situation: You Changed A Lower Branch And Need To Propagate Upward
+
+Assumed state:
+
+- You modified a lower stack entry.
+- Child branches now need to be rebased/merged/cherry-picked.
+
+Run:
+
+```bash
+tide ripple
+```
+
+Strategy selection:
+
+```toml
+[stack.ripple]
+strategy = "rebase"   # or "merge" or "cherry-pick"
+```
+
+Conflict handling:
+
+```bash
+tide ripple --conflict=rollback
+tide ripple --conflict=pause
+tide ripple --conflict=interactive
+```
+
+Use this when:
+
+- You want stack-wide propagation with one command.
+- You need deterministic conflict behavior for local dev or CI.
+
+## Situation: You Need To Apply Current Changes To Another Entry
+
+Assumed state:
+
+- You have local changes on the current entry.
+- You want to transfer them to another stack entry.
+
+Run:
+
+```bash
+tide apply <target-branch>
+```
+
+Use this when:
+
+- You accidentally developed on the wrong stack entry.
+- You want patch-based transfer using temporary worktrees.
+- You may optionally follow with `tide ripple` if upstream propagation is needed.
+
+## Situation: Your Stack Is A Tree (Not A Line)
+
+Assumed state:
+
+- A branch has multiple child branches.
+
+Run:
+
+```bash
+tide show
+```
+
+Then choose operation scope intentionally:
+
+- Path to trunk (default landing path behavior)
+- Subtree (explicit)
+- Full connected component (explicit)
+
+Use this when:
+
+- You need to land only one branch line without touching sibling branches.
+
+## Situation: You Need PRs Created For Missing Stack Entries
+
+Assumed state:
+
+- Local and remote branches are ready.
+- Some branches do not yet have PRs.
+
+Run:
+
+```bash
+tide pr create --stack <selector> --scope path --head-pr <pr-number>
+```
+
+Use this when:
+
+- You need Tide to create missing PRs in stack order.
+- You want consistent draft/title/body behavior from config/templates.
+
+## Situation: You Need To Land A Stack Deterministically
+
+Assumed state:
+
+- PRs exist for the path you intend to land.
+- Forge permissions and branch protection are configured.
+
+Run:
+
+```bash
+tide land
+```
+
+Landing modes:
+
+- `squash-each` (default)
+- `close-non-head`
+
+What Tide validates before mutating:
+
+1. Resolves the stack path.
+2. Ensures required PRs exist.
+3. Verifies mergeable state.
+4. Executes merge/close sequence.
+
+If PRs are missing, Tide fails with a non-zero exit and prints the exact `tide pr create` command to fix.
+
+## Situation: A Conflict Happens And You Need Predictable Recovery
+
+Assumed state:
+
+- A mutating operation (`ripple`, `apply`, navigation with move/stash, landing path updates) hits a git conflict.
+
+Default behavior (`rollback`):
+
+- Operation aborts.
+- Conflicted files are reported.
+- Repository is restored to pre-command state.
+
+For machine handling:
+
+```bash
+tide --json ripple
+```
+
+Conflict payload shape:
 
 ```json
 {
-  "id": 1,
-  "full_name": "tideadmin/stack-demo",
-  "default_branch": "main"
+  "error": "conflict",
+  "files": ["path/one", "path/two"]
 }
 ```
 
-## 4) Push a Real Stacked Branch Sequence
+Use this when:
+
+- CI or bots need stable conflict detection and retry logic.
+
+## Situation: You Work In Fork And Direct Collaboration Modes
+
+Assumed state:
+
+- Some repos use fork-based contribution, others direct push.
+- Mixed local/remote stack state exists.
+
+Run:
 
 ```bash
-rm -rf /workspace/tmp/stack-demo-local
-mkdir -p /workspace/tmp/stack-demo-local
-cd /workspace/tmp/stack-demo-local
-
-git init -b main
-git config user.name 'Tide Demo'
-git config user.email 'tide-demo@example.com'
-printf '# stack-demo\n' > README.md
-git add README.md
-git commit -m 'chore: initial commit'
-git remote add origin "http://tideadmin:${TOKEN}@${IP}:3000/tideadmin/stack-demo.git"
-git push -u origin main
-
-git checkout -b feat/api
-printf '\nAPI=v1\n' >> README.md
-git add README.md
-git commit -m 'feat: add API marker'
-git push -u origin feat/api
-
-git checkout -b feat/api-tests
-mkdir -p tests
-printf 'def test_api_marker():\n    assert True\n' > tests/test_api.py
-git add tests/test_api.py
-git commit -m 'test: add api smoke test'
-git push -u origin feat/api-tests
-
-git branch -vv
+tide checkout
+tide push
+tide sync
 ```
 
-Actual output:
+Set collaboration mode:
 
-```text
-Initialized empty Git repository in /workspace/tmp/stack-demo-local/.git/
-[main (root-commit) 70ffebf] chore: initial commit
- 1 file changed, 1 insertion(+)
- create mode 100644 README.md
-remote: . Processing 1 references
-remote: Processed 1 references in total
-To http://172.17.0.11:3000/tideadmin/stack-demo.git
- * [new branch]      main -> main
-branch 'main' set up to track 'origin/main'.
-Switched to a new branch 'feat/api'
-[feat/api f3e3b80] feat: add API marker
- 1 file changed, 2 insertions(+)
-remote: . Processing 1 references
-remote: Processed 1 references in total
-To http://172.17.0.11:3000/tideadmin/stack-demo.git
- * [new branch]      feat/api -> feat/api
-branch 'feat/api' set up to track 'origin/feat/api'.
-Switched to a new branch 'feat/api-tests'
-[feat/api-tests 4f50cf2] test: add api smoke test
- 1 file changed, 2 insertions(+)
- create mode 100644 tests/test_api.py
-remote: . Processing 1 references
-remote: Processed 1 references in total
-To http://172.17.0.11:3000/tideadmin/stack-demo.git
- * [new branch]      feat/api-tests -> feat/api-tests
-branch 'feat/api-tests' set up to track 'origin/feat/api-tests'.
-  feat/api       f3e3b80 [origin/feat/api] feat: add API marker
-* feat/api-tests 4f50cf2 [origin/feat/api-tests] test: add api smoke test
-  main           70ffebf [origin/main] chore: initial commit
+```toml
+[collab]
+mode = "fork"   # or "direct"
 ```
 
-## 5) Create Stacked PRs Through Gitea API
+Use this when:
+
+- You need the same stack workflow across internal and external repos.
+
+## Situation: You Need Stable Non-Interactive CI Behavior
+
+Assumed state:
+
+- Command is run from automation.
+
+Pattern:
 
 ```bash
-curl -sS -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"title":"feat/api -> main","head":"feat/api","base":"main","body":"First layer of the stack"}' \
-  "http://$IP:3000/api/v1/repos/tideadmin/stack-demo/pulls"
-
-curl -sS -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"title":"feat/api-tests -> feat/api","head":"feat/api-tests","base":"feat/api","body":"Second layer of the stack"}' \
-  "http://$IP:3000/api/v1/repos/tideadmin/stack-demo/pulls"
+tide --json --yes status
+tide --json --yes show
+tide --json --yes ripple
+tide --json --yes land
 ```
 
-Actual output (trimmed to key fields):
+Use this when:
 
-```json
-[
-  {
-    "number": 1,
-    "title": "feat/api -> main",
-    "head": "feat/api",
-    "base": "main",
-    "state": "open",
-    "mergeable": true
-  },
-  {
-    "number": 2,
-    "title": "feat/api-tests -> feat/api",
-    "head": "feat/api-tests",
-    "base": "feat/api",
-    "state": "open",
-    "mergeable": true
-  }
-]
+- You need deterministic output and exit codes without prompts.
+
+## Situation: You Need Repo-Specific Behavior Overrides
+
+Assumed state:
+
+- Team-level defaults exist, but one repo needs exceptions.
+
+Config layers:
+
+- User config (platformdirs location)
+- Repo override: `.git/tide/config.toml`
+
+Major keys:
+
+```toml
+[repo]
+trunk = "main"
+
+[naming]
+branch_template = "$USER/$STACK/$FEATURE"
+
+[stack.ripple]
+strategy = "rebase"
+
+[dirty]
+default = "move"
+
+[conflict]
+mode = "rollback"
+
+[forge]
+provider = "github"
+
+[forge.github]
+transport = "graphql"
+auth = "gh"
+
+[collab]
+mode = "fork"
+
+[auto_update]
+channel = "release"   # release | master | off
+ttl_seconds = 86400
 ```
 
-List open PRs:
+Use this when:
 
-```bash
-curl -sS -H "Authorization: token $TOKEN" \
-  "http://$IP:3000/api/v1/repos/tideadmin/stack-demo/pulls?state=open" | \
-python3 -c 'import json,sys; arr=json.load(sys.stdin); out=[{"number":p["number"],"title":p["title"],"head":p["head"]["ref"],"base":p["base"]["ref"],"mergeable":p["mergeable"],"state":p["state"]} for p in arr]; print(json.dumps(out, indent=2))'
-```
+- You need deterministic team defaults while preserving per-repo flexibility.
 
-Actual output:
+## Situation: You Use Submodules, Sparse Checkout, Or Worktrees
 
-```json
-[
-  {
-    "number": 2,
-    "title": "feat/api-tests -> feat/api",
-    "head": "feat/api-tests",
-    "base": "feat/api",
-    "mergeable": true,
-    "state": "open"
-  },
-  {
-    "number": 1,
-    "title": "feat/api -> main",
-    "head": "feat/api",
-    "base": "main",
-    "mergeable": true,
-    "state": "open"
-  }
-]
-```
+Assumed state:
 
-## 6) Failure Path Example (Bad Token)
+- Your repo has non-trivial git state (submodules/sparse/worktrees/untracked changes).
 
-```bash
-curl -sS -i -H 'Authorization: token not-a-real-token' "http://$IP:3000/api/v1/user" | sed -n '1,12p'
-```
+What Tide guarantees for mutating operations:
 
-Actual output:
+- Transaction snapshots include worktrees, submodules, sparse-checkout state, index, untracked files, and stashes.
+- On rollback, these are restored.
 
-```text
-HTTP/1.1 401 Unauthorized
-Cache-Control: max-age=0, private, must-revalidate, no-transform
-Content-Type: application/json;charset=utf-8
-X-Content-Type-Options: nosniff
-X-Frame-Options: SAMEORIGIN
-Date: Fri, 27 Feb 2026 13:41:46 GMT
-Content-Length: 93
+Use this when:
 
-{"message":"user does not exist [uid: 0, name: ]","url":"http://localhost:3001/api/swagger"}
-```
+- You need safety guarantees before using destructive graph operations.
 
-## 7) Run Tide Against This Repo
+## Situation: You Need Forge-Aware Behavior
 
-This repo currently uses the local forge provider in code, so this step demonstrates stack inference against real local+remote git refs hosted on Gitea.
+Assumed state:
 
-```bash
-cd /workspace/tmp/stack-demo-local
-PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages \
-  python3 -m tide.cli.main show
+- You rely on PR metadata for accurate stack inference and landing.
 
-PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages \
-  python3 -m tide.cli.main --json status
-```
+Forge model:
 
-Actual output:
+- Provider abstraction (`ForgeProvider`, `ForgeTransport`)
+- GitHub-first configuration with pluggable auth/transport
+- Extensible to GitLab/Bitbucket
 
-```text
-main (local)
-  origin/main* (remote)
+Use this when:
 
-origin/feat/api (remote)
-  feat/api* (local)
+- You need predictable behavior across different forge backends.
 
-origin/feat/api-tests (remote)
-  feat/api-tests* (local, current)
+## Situation: You Need To Debug Fast
 
-feat/api (local)
+Checklist:
 
-feat/api-tests (local, current)
+1. Run `tide --json status` and verify parent/source edges.
+2. Run `tide show` and confirm local/remote/PR expectations.
+3. Re-run failed command with explicit `--conflict` and `--dirty`.
+4. Inspect exit code (`2`/`3`/`4`/`5`/`6`) and branch accordingly in scripts.
 
-origin/main (remote)
-```
+## Scope Notes
 
-```json
-{"branches": [{"branch": "feat/api", "local": true, "parent": "origin/feat/api", "pr": null, "remote": false, "source": "heuristic"}, {"branch": "feat/api-tests", "local": true, "parent": "origin/feat/api-tests", "pr": null, "remote": false, "source": "heuristic"}, {"branch": "main", "local": true, "parent": null, "pr": null, "remote": false, "source": null}, {"branch": "origin/feat/api", "local": false, "parent": null, "pr": null, "remote": true, "source": null}, {"branch": "origin/feat/api-tests", "local": false, "parent": null, "pr": null, "remote": true, "source": null}, {"branch": "origin/main", "local": false, "parent": "main", "pr": null, "remote": true, "source": "heuristic"}]}
-```
-
-## Practical Notes
-
-- In this Docker environment, `localhost:3001` was not directly reachable from the host shell, but the bridge IP (`172.17.0.11`) was. If your host port mapping works, you can use `http://localhost:3001` instead.
-- Token handling in examples is intentionally shell-variable based so you can rotate/revoke freely.
-- Keep temporary demo repos under `/workspace/tmp` to avoid polluting your main checkout.
-
-## Cleanup
-
-```bash
-docker rm -f tide-gitea-demo
-rm -rf /workspace/tmp/gitea-data /workspace/tmp/stack-demo-local
-```
+- This README documents user operations aligned to the design spec, including branching stacks, collision handling modes, landing semantics, collaboration modes, config, non-interactive guarantees, and transactional safety expectations.
+- Future extensions in the design spec (for example merge queue bundle mode or `tide verify`) are intentionally not documented as runnable commands here until they are productized.

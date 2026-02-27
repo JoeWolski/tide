@@ -201,6 +201,50 @@ def test_default_conflict_mode_comes_from_config(tmp_path: Path) -> None:
     assert "repository paused in conflicted state" in out.stderr
 
 
+def test_ripple_cherry_pick_strategy_preserves_child_commit(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+
+    (repo / ".git" / "tide").mkdir(parents=True)
+    (repo / ".git" / "tide" / "config.toml").write_text(
+        "[stack.ripple]\nstrategy = \"cherry-pick\"\n",
+        encoding="utf-8",
+    )
+
+    (repo / "base.txt").write_text("base\n", encoding="utf-8")
+    git(repo, "add", "base.txt")
+    git(repo, "commit", "-m", "base")
+
+    git(repo, "checkout", "-b", "feat1")
+    (repo / "base.txt").write_text("feat1-a\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat1 a")
+    git(repo, "config", "branch.feat1.tide-parent", "main")
+
+    git(repo, "checkout", "-b", "feat2")
+    (repo / "child.txt").write_text("feat2\n", encoding="utf-8")
+    git(repo, "add", "child.txt")
+    git(repo, "commit", "-m", "feat2")
+    git(repo, "config", "branch.feat2.tide-parent", "feat1")
+    feat2_before = git(repo, "rev-parse", "feat2")
+
+    git(repo, "checkout", "feat1")
+    (repo / "base.txt").write_text("feat1-b\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat1 b")
+
+    out = run(repo, "ripple")
+    assert out.returncode == 0
+
+    # Cherry-pick mode should retain original child commits and append copied commits.
+    is_ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", feat2_before, "feat2"],
+        cwd=repo,
+        check=False,
+    )
+    assert is_ancestor.returncode == 0
+    assert git(repo, "show", "-s", "--format=%s", "feat2") == "feat1 b"
+
+
 def test_land_close_non_head_only_reports_non_head_branches(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import tomllib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -80,6 +81,18 @@ def slugify_ref(value: str) -> str:
     cleaned = re.sub(r"/+", "/", cleaned)
     cleaned = cleaned.strip("/.")
     if not cleaned or INVALID_REF_RE.search(cleaned):
+        raise InputError(f"invalid branch name after slugification: {value!r}")
+    if cleaned.endswith(".lock"):
+        raise InputError(f"invalid branch name after slugification: {value!r}")
+
+    # Delegate to git for authoritative ref-format validation.
+    out = subprocess.run(
+        ["git", "check-ref-format", "--branch", cleaned],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if out.returncode != 0:
         raise InputError(f"invalid branch name after slugification: {value!r}")
     return cleaned
 

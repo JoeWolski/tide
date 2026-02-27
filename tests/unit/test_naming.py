@@ -26,3 +26,13 @@ def test_load_config_rejects_missing_feature(tmp_path) -> None:
     )
     with pytest.raises(InputError):
         load_config(tmp_path, env={})
+
+
+def test_branch_naming_rejects_git_invalid_ref() -> None:
+    cfg = TideConfig(values=DEFAULTS)
+    with pytest.raises(InputError):
+        cfg.branch_name(
+            user="local",
+            stack="stack",
+            feature="ends-with-lock.lock",
+        )

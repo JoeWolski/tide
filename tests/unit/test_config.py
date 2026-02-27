@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from tide.core.errors import InputError
 from tide.config.settings import load_config
+from tide.core.errors import InputError
 
 
 def test_repo_config_overrides_user(tmp_path: Path, monkeypatch) -> None:

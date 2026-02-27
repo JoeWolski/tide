@@ -310,7 +310,7 @@ def test_show_includes_disconnected_components(tmp_path: Path) -> None:
     assert "lonely" in rendered
 
 
-def test_show_renders_ascii_tree_connectors(tmp_path: Path) -> None:
+def test_show_renders_pretty_tree_connectors(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     init_repo(repo)
@@ -339,9 +339,9 @@ def test_show_renders_ascii_tree_connectors(tmp_path: Path) -> None:
 
     out = run(repo, "show")
     assert out.returncode == 0
-    assert "|-- feat1 (local)" in out.stdout
-    assert "|   `-- feat3 (local)" in out.stdout
-    assert "`-- feat2 (local)" in out.stdout
+    assert "├─ feat1 (local)" in out.stdout
+    assert "│   └─ feat3 (local)" in out.stdout
+    assert "└─ feat2 (local)" in out.stdout
 
 
 def test_pr_create_supports_head_pr_selector_and_templates(tmp_path: Path) -> None:

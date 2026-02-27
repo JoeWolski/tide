@@ -151,10 +151,28 @@ def _render_show(obj: CliContext) -> str:
             edge_marker = "*" if edge.source.value == "heuristic" else ""
             visit(edge.child, prefix + "  ", edge_marker)
 
+    seen: set[str] = set()
+
+    def visit_once(node: str, prefix: str, marker: str = "") -> None:
+        if node in seen:
+            return
+        seen.add(node)
+        visit(node, prefix, marker)
+
+    roots = sorted(name for name in graph.nodes if name not in graph.parents)
+    ordered_roots: list[str] = []
     if trunk in graph.nodes:
-        visit(trunk, "")
-        return "\n".join(lines)
-    return "\n".join(sorted(graph.nodes.keys()))
+        ordered_roots.append(trunk)
+    ordered_roots.extend(root for root in roots if root != trunk)
+    for node in sorted(graph.nodes):
+        if node not in seen and node not in ordered_roots:
+            ordered_roots.append(node)
+
+    for idx, root in enumerate(ordered_roots):
+        if idx > 0:
+            lines.append("")
+        visit_once(root, "")
+    return "\n".join(lines)
 
 
 def _status_payload(obj: CliContext) -> dict[str, object]:

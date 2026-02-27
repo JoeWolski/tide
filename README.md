@@ -2,425 +2,392 @@
 
 `tide` is a deterministic CLI for stacked branch and PR workflows.
 
-This README is user-focused: every section is about running Tide in a concrete situation. It assumes your repository, remote, and forge auth are already set up.
+This README is a real command transcript from running Tide against a local Gitea-backed git remote. It is user-focused and assumes your forge/repo auth is already set up.
 
-## Mental Model
+## Transcript Fixture (already prepared)
 
-Tide infers your stack from real git/remote/PR state. It does not require Tide metadata to function.
-
-- Local stack state: your local branches and HEAD.
-- Remote stack state: remote-tracking branches and upstream relationships.
-- Project/PR state: pull requests on your forge.
-
-Inference priority:
-
-1. PR metadata (head -> base)
-2. Remote tracking relationships
-3. Git ancestry heuristics (marked in UI)
-
-## Default Behavior You Can Rely On
-
-- Mutating commands are transactional.
-- On conflict, default behavior is full rollback.
-- Deterministic exit codes are used for scripting.
-- `--json` and `--yes` are available for non-interactive automation.
-
-Exit codes:
-
-- `0`: success
-- `2`: input/config error
-- `3`: git failure
-- `4`: conflict
-- `5`: forge/auth/network failure
-- `6`: ambiguous operation requiring explicit flags
-
-## Situation: You Need To Understand The Current Stack
-
-Assumed state:
-
-- Local branches exist (`main`, feature branches).
-- Some branches may only exist remotely.
-- PRs may be partially created.
-
-Run:
+- Remote forge: local Gitea
+- Repo: `tideadmin/tide-readme-demo`
+- Trunk: `main`
+- Tide command used in this environment:
 
 ```bash
-tide show
-tide --json show
-tide status
-tide --json status
+PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main ...
 ```
 
-Use this when:
+If your environment has a normal Tide install, replace that with `tide ...`.
 
-- You need the full tree view before rebasing or landing.
-- You want scriptable flat output for CI or bots.
-- You need to verify local/remote divergence and PR mapping.
-
-## Situation: You Need A New Stack Entry From Current Branch
-
-Assumed state:
-
-- You are on a branch that belongs to a stack.
-- You want a child branch for the next change.
-
-Run:
+## Situation: Understand Current Stack State (`show`, `status`)
 
 ```bash
-tide add "feature-name"
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main show
+main (local, current)
+  origin/main* (remote)
+
+origin/main (remote)
+[exit 0]
+
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main status
+main	loc=L	parent=-	source=-	pr=-
+origin/main	loc=R	parent=main	source=heuristic	pr=-
+[exit 0]
 ```
 
-Dirty working tree options:
+## Situation: Create New Stack Entries (`add`)
 
 ```bash
-tide add "feature-name" --dirty=fail
-tide add "feature-name" --dirty=stash
-tide add "feature-name" --dirty=move
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main add api
+local/stack/api
+[exit 0]
+
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main add tests
+local/stack/tests
+[exit 0]
 ```
 
-Use this when:
+## Situation: Navigate Between Parent/Child (`up`, `down`, `goto`, `checkout`)
 
-- You want deterministic branch creation with configured naming.
-- You need explicit dirty-state behavior instead of implicit stash habits.
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main up
+local/stack/api
+[exit 0]
 
-## Situation: Your Branch Naming Must Follow Team Rules
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main down
+multiple child branches from 'local/stack/api': local/stack/tests, origin/main; use tide goto
+[exit 6]
 
-Assumed state:
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main goto main
+main
+[exit 0]
 
-- Team branch naming conventions are enforced.
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main checkout local/stack/api
+local/stack/api
+[exit 0]
+```
 
-Configure template:
+`down` demonstrates the ambiguity exit path from the design spec (`exit 6`).
+
+## Situation: Push Stack Entries To Server (`push`) And Inspect Updated Server-Visible State (`show`)
+
+### Push `local/stack/api`
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main push
+local/stack/api
+[exit 0]
+```
+
+`show` immediately after server-affecting command:
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main show
+main (local)
+
+origin/local/stack/api (remote)
+  local/stack/api* (local, current)
+    local/stack/tests (local)
+      origin/main* (remote)
+
+local/stack/api (local, current)
+  local/stack/tests (local)
+    origin/main* (remote)
+
+local/stack/tests (local)
+  origin/main* (remote)
+
+origin/main (remote)
+[exit 0]
+```
+
+### Push `local/stack/tests`
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main checkout local/stack/tests
+local/stack/tests
+[exit 0]
+
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main push
+local/stack/tests
+[exit 0]
+```
+
+`show` immediately after server-affecting command:
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main show
+main (local)
+  origin/main* (remote)
+
+origin/local/stack/api (remote)
+  local/stack/api* (local)
+
+origin/local/stack/tests (remote)
+  local/stack/tests* (local, current)
+
+local/stack/api (local)
+
+local/stack/tests (local, current)
+
+origin/main (remote)
+[exit 0]
+```
+
+## Situation: Propagate Parent Changes Upward (`ripple`)
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main checkout local/stack/api
+local/stack/api
+[exit 0]
+
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main ripple
+local/stack/api
+[exit 0]
+```
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main show
+main (local)
+  local/stack/api (local, current)
+    local/stack/tests (local)
+  origin/local/stack/api* (remote)
+  origin/local/stack/tests* (remote)
+  origin/main* (remote)
+
+local/stack/api (local, current)
+  local/stack/tests (local)
+
+local/stack/tests (local)
+
+origin/local/stack/api (remote)
+
+origin/local/stack/tests (remote)
+
+origin/main (remote)
+[exit 0]
+```
+
+## Situation: Apply Current Branch Diff To Another Stack Entry (`apply`)
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main checkout local/stack/tests
+local/stack/tests
+[exit 0]
+
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main apply local/stack/api
+local/stack/tests -> local/stack/api
+[exit 0]
+```
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main show
+main (local)
+  local/stack/api (local)
+    local/stack/tests (local, current)
+  origin/local/stack/api* (remote)
+  origin/local/stack/tests* (remote)
+  origin/main* (remote)
+
+local/stack/api (local)
+  local/stack/tests (local, current)
+
+local/stack/tests (local, current)
+
+origin/local/stack/api (remote)
+
+origin/local/stack/tests (remote)
+
+origin/main (remote)
+[exit 0]
+```
+
+## Situation: Land Fails When PRs Are Missing (`land` validation)
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main land --stack local/stack/tests --scope path
+missing PRs for branches: local/stack/api, local/stack/tests
+run: tide pr create --stack local/stack/tests --scope path
+[exit 2]
+
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main --json land --stack local/stack/tests --scope path
+{"error": "inputerror", "message": "missing PRs for branches: local/stack/api, local/stack/tests\nrun: tide pr create --stack local/stack/tests --scope path"}
+[exit 2]
+```
+
+## Situation: Create Missing PRs For Stack Path (`pr create`)
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main pr create --stack local/stack/tests --scope path
+#1 local/stack/api -> main
+#2 local/stack/tests -> local/stack/api
+[exit 0]
+```
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main show
+main (local)
+  local/stack/api (local, PR#1)
+    local/stack/tests (local, PR#2, current)
+  origin/local/stack/api* (remote)
+  origin/local/stack/tests* (remote)
+  origin/main* (remote)
+
+local/stack/api (local, PR#1)
+  local/stack/tests (local, PR#2, current)
+
+local/stack/tests (local, PR#2, current)
+
+origin/local/stack/api (remote)
+
+origin/local/stack/tests (remote)
+
+origin/main (remote)
+[exit 0]
+```
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main --json status
+{"branches": [{"branch": "local/stack/api", "local": true, "parent": "main", "pr": 1, "remote": false, "source": "pr"}, {"branch": "local/stack/tests", "local": true, "parent": "local/stack/api", "pr": 2, "remote": false, "source": "pr"}, {"branch": "main", "local": true, "parent": null, "pr": null, "remote": false, "source": null}, {"branch": "origin/local/stack/api", "local": false, "parent": "main", "pr": null, "remote": true, "source": "heuristic"}, {"branch": "origin/local/stack/tests", "local": false, "parent": "main", "pr": null, "remote": true, "source": "heuristic"}, {"branch": "origin/main", "local": false, "parent": "main", "pr": null, "remote": true, "source": "heuristic"}]}
+[exit 0]
+```
+
+## Situation: Land Stack Path (`land`) Then Push Trunk (`push`)
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main land --stack local/stack/tests --scope path
+landed 2 branches onto main
+[exit 0]
+```
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main show
+main (local, current, div=1/0)
+  local/stack/api (local, PR#1)
+    local/stack/tests (local, PR#2)
+
+origin/main (remote)
+  origin/local/stack/api* (remote)
+  origin/local/stack/tests* (remote)
+
+local/stack/api (local, PR#1)
+  local/stack/tests (local, PR#2)
+
+local/stack/tests (local, PR#2)
+
+origin/local/stack/api (remote)
+
+origin/local/stack/tests (remote)
+[exit 0]
+```
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main push
+main
+[exit 0]
+```
+
+`show` immediately after server-affecting command:
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main show
+main (local, current)
+  local/stack/api (local, PR#1)
+    local/stack/tests (local, PR#2)
+  origin/main* (remote)
+
+origin/local/stack/api (remote)
+
+origin/local/stack/tests (remote)
+
+local/stack/api (local, PR#1)
+  local/stack/tests (local, PR#2)
+
+local/stack/tests (local, PR#2)
+
+origin/main (remote)
+[exit 0]
+```
+
+## Situation: Sync Local Branch With Updated Remote (`sync`) And Re-Inspect State
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main sync
+main
+[exit 0]
+```
+
+`show` immediately after server-affecting command:
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main show
+main (local, current)
+  local/stack/api (local, PR#1)
+    local/stack/tests (local, PR#2)
+  origin/main* (remote)
+
+origin/local/stack/api (remote)
+
+origin/local/stack/tests (remote)
+
+local/stack/api (local, PR#1)
+  local/stack/tests (local, PR#2)
+
+local/stack/tests (local, PR#2)
+
+origin/main (remote)
+[exit 0]
+```
+
+## Situation: Conflict Mode Demonstration (`--conflict=pause`)
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main ripple --conflict=pause
+conflict detected; repository paused in conflicted state (resolve manually)
+conflict detected
+operation: ripple
+branches: local/stack/api, main
+files: app.txt
+rerun: tide ripple --conflict=pause
+[exit 4]
+```
+
+## Situation: Machine-Readable Graph And Non-Interactive Flags (`--json`, `--yes`)
+
+```bash
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main checkout main
+main
+[exit 0]
+
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main --json show
+{"edges": [{"child": "local/stack/tests", "parent": "local/stack/api", "source": "pr"}, {"child": "local/stack/api", "parent": "main", "source": "pr"}, {"child": "origin/main", "parent": "main", "source": "heuristic"}], "node_meta": {"local/stack/api": {"ahead": 0, "behind": 0, "current": false, "local": true, "remote": false}, "local/stack/tests": {"ahead": 0, "behind": 0, "current": false, "local": true, "remote": false}, "main": {"ahead": 0, "behind": 0, "current": true, "local": true, "remote": false}, "origin/local/stack/api": {"ahead": 0, "behind": 0, "current": false, "local": false, "remote": true}, "origin/local/stack/tests": {"ahead": 0, "behind": 0, "current": false, "local": false, "remote": true}, "origin/main": {"ahead": 0, "behind": 0, "current": false, "local": false, "remote": true}}, "nodes": ["local/stack/api", "local/stack/tests", "main", "origin/local/stack/api", "origin/local/stack/tests", "origin/main"], "prs": {"local/stack/api": {"base": "main", "checks": null, "draft": true, "mergeable": null, "number": 1, "reviews": null}, "local/stack/tests": {"base": "local/stack/api", "checks": null, "draft": true, "mergeable": null, "number": 2, "reviews": null}}}
+[exit 0]
+
+$ PYTHONPATH=/workspace/tide:/workspace/tide/.pyuser/lib/python3.12/site-packages python3 -m tide.cli.main --yes --json status
+{"branches": [{"branch": "local/stack/api", "local": true, "parent": "main", "pr": 1, "remote": false, "source": "pr"}, {"branch": "local/stack/tests", "local": true, "parent": "local/stack/api", "pr": 2, "remote": false, "source": "pr"}, {"branch": "main", "local": true, "parent": null, "pr": null, "remote": false, "source": null}, {"branch": "origin/local/stack/api", "local": false, "parent": null, "pr": null, "remote": true, "source": null}, {"branch": "origin/local/stack/tests", "local": false, "parent": null, "pr": null, "remote": true, "source": null}, {"branch": "origin/main", "local": false, "parent": "main", "pr": null, "remote": true, "source": "heuristic"}]}
+[exit 0]
+```
+
+## Branch Naming Template Used In This Run
+
+Branches created by `tide add` used this default template:
 
 ```toml
 [naming]
 branch_template = "$USER/$STACK/$FEATURE"
 ```
 
-Supported tokens:
+That produced:
 
-- `$USER`
-- `$STACK`
-- `$FEATURE` (required)
-- `$DATE`
-- `$N`
-- `$BASE`
+- `local/stack/api`
+- `local/stack/tests`
 
-Use this when:
+## Notes On Coverage vs Design Spec
 
-- You want predictable branch names across teammates and automation.
+The transcript above covers the operational situations in the design spec that are implemented and runnable in this codebase now:
 
-## Situation: You Need To Move Around A Stack Safely
-
-Assumed state:
-
-- You are on one stack entry and need to move to parent/child/explicit node.
-- Your working tree may be dirty.
-
-Run:
-
-```bash
-tide up
-tide down
-tide goto <branch>
-```
-
-With explicit behavior:
-
-```bash
-tide up --dirty=fail --conflict=rollback
-tide down --dirty=stash --conflict=pause
-tide goto <branch> --dirty=move --conflict=interactive
-```
-
-Use this when:
-
-- You switch between stacked diffs frequently.
-- You want predictable behavior if local changes exist.
-
-## Situation: You Changed A Lower Branch And Need To Propagate Upward
-
-Assumed state:
-
-- You modified a lower stack entry.
-- Child branches now need to be rebased/merged/cherry-picked.
-
-Run:
-
-```bash
-tide ripple
-```
-
-Strategy selection:
-
-```toml
-[stack.ripple]
-strategy = "rebase"   # or "merge" or "cherry-pick"
-```
-
-Conflict handling:
-
-```bash
-tide ripple --conflict=rollback
-tide ripple --conflict=pause
-tide ripple --conflict=interactive
-```
-
-Use this when:
-
-- You want stack-wide propagation with one command.
-- You need deterministic conflict behavior for local dev or CI.
-
-## Situation: You Need To Apply Current Changes To Another Entry
-
-Assumed state:
-
-- You have local changes on the current entry.
-- You want to transfer them to another stack entry.
-
-Run:
-
-```bash
-tide apply <target-branch>
-```
-
-Use this when:
-
-- You accidentally developed on the wrong stack entry.
-- You want patch-based transfer using temporary worktrees.
-- You may optionally follow with `tide ripple` if upstream propagation is needed.
-
-## Situation: Your Stack Is A Tree (Not A Line)
-
-Assumed state:
-
-- A branch has multiple child branches.
-
-Run:
-
-```bash
-tide show
-```
-
-Then choose operation scope intentionally:
-
-- Path to trunk (default landing path behavior)
-- Subtree (explicit)
-- Full connected component (explicit)
-
-Use this when:
-
-- You need to land only one branch line without touching sibling branches.
-
-## Situation: You Need PRs Created For Missing Stack Entries
-
-Assumed state:
-
-- Local and remote branches are ready.
-- Some branches do not yet have PRs.
-
-Run:
-
-```bash
-tide pr create --stack <selector> --scope path --head-pr <pr-number>
-```
-
-Use this when:
-
-- You need Tide to create missing PRs in stack order.
-- You want consistent draft/title/body behavior from config/templates.
-
-## Situation: You Need To Land A Stack Deterministically
-
-Assumed state:
-
-- PRs exist for the path you intend to land.
-- Forge permissions and branch protection are configured.
-
-Run:
-
-```bash
-tide land
-```
-
-Landing modes:
-
-- `squash-each` (default)
-- `close-non-head`
-
-What Tide validates before mutating:
-
-1. Resolves the stack path.
-2. Ensures required PRs exist.
-3. Verifies mergeable state.
-4. Executes merge/close sequence.
-
-If PRs are missing, Tide fails with a non-zero exit and prints the exact `tide pr create` command to fix.
-
-## Situation: A Conflict Happens And You Need Predictable Recovery
-
-Assumed state:
-
-- A mutating operation (`ripple`, `apply`, navigation with move/stash, landing path updates) hits a git conflict.
-
-Default behavior (`rollback`):
-
-- Operation aborts.
-- Conflicted files are reported.
-- Repository is restored to pre-command state.
-
-For machine handling:
-
-```bash
-tide --json ripple
-```
-
-Conflict payload shape:
-
-```json
-{
-  "error": "conflict",
-  "files": ["path/one", "path/two"]
-}
-```
-
-Use this when:
-
-- CI or bots need stable conflict detection and retry logic.
-
-## Situation: You Work In Fork And Direct Collaboration Modes
-
-Assumed state:
-
-- Some repos use fork-based contribution, others direct push.
-- Mixed local/remote stack state exists.
-
-Run:
-
-```bash
-tide checkout
-tide push
-tide sync
-```
-
-Set collaboration mode:
-
-```toml
-[collab]
-mode = "fork"   # or "direct"
-```
-
-Use this when:
-
-- You need the same stack workflow across internal and external repos.
-
-## Situation: You Need Stable Non-Interactive CI Behavior
-
-Assumed state:
-
-- Command is run from automation.
-
-Pattern:
-
-```bash
-tide --json --yes status
-tide --json --yes show
-tide --json --yes ripple
-tide --json --yes land
-```
-
-Use this when:
-
-- You need deterministic output and exit codes without prompts.
-
-## Situation: You Need Repo-Specific Behavior Overrides
-
-Assumed state:
-
-- Team-level defaults exist, but one repo needs exceptions.
-
-Config layers:
-
-- User config (platformdirs location)
-- Repo override: `.git/tide/config.toml`
-
-Major keys:
-
-```toml
-[repo]
-trunk = "main"
-
-[naming]
-branch_template = "$USER/$STACK/$FEATURE"
-
-[stack.ripple]
-strategy = "rebase"
-
-[dirty]
-default = "move"
-
-[conflict]
-mode = "rollback"
-
-[forge]
-provider = "github"
-
-[forge.github]
-transport = "graphql"
-auth = "gh"
-
-[collab]
-mode = "fork"
-
-[auto_update]
-channel = "release"   # release | master | off
-ttl_seconds = 86400
-```
-
-Use this when:
-
-- You need deterministic team defaults while preserving per-repo flexibility.
-
-## Situation: You Use Submodules, Sparse Checkout, Or Worktrees
-
-Assumed state:
-
-- Your repo has non-trivial git state (submodules/sparse/worktrees/untracked changes).
-
-What Tide guarantees for mutating operations:
-
-- Transaction snapshots include worktrees, submodules, sparse-checkout state, index, untracked files, and stashes.
-- On rollback, these are restored.
-
-Use this when:
-
-- You need safety guarantees before using destructive graph operations.
-
-## Situation: You Need Forge-Aware Behavior
-
-Assumed state:
-
-- You rely on PR metadata for accurate stack inference and landing.
-
-Forge model:
-
-- Provider abstraction (`ForgeProvider`, `ForgeTransport`)
-- GitHub-first configuration with pluggable auth/transport
-- Extensible to GitLab/Bitbucket
-
-Use this when:
-
-- You need predictable behavior across different forge backends.
-
-## Situation: You Need To Debug Fast
-
-Checklist:
-
-1. Run `tide --json status` and verify parent/source edges.
-2. Run `tide show` and confirm local/remote/PR expectations.
-3. Re-run failed command with explicit `--conflict` and `--dirty`.
-4. Inspect exit code (`2`/`3`/`4`/`5`/`6`) and branch accordingly in scripts.
-
-## Scope Notes
-
-- This README documents user operations aligned to the design spec, including branching stacks, collision handling modes, landing semantics, collaboration modes, config, non-interactive guarantees, and transactional safety expectations.
-- Future extensions in the design spec (for example merge queue bundle mode or `tide verify`) are intentionally not documented as runnable commands here until they are productized.
+- Graph inspection (`show`, `status`, JSON)
+- Stack creation and navigation (`add`, `up`, `down`, `goto`, `checkout`)
+- Propagation and patch transfer (`ripple`, `apply`)
+- PR lifecycle in Tide's current local provider (`pr create`, PR-linked graph rendering)
+- Landing semantics and missing-PR validation (`land`)
+- Collaboration/server interaction (`push`, `sync`) with `show` snapshots after each server change
+- Conflict/non-zero exits and machine-readable outputs

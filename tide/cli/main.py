@@ -182,9 +182,9 @@ def _render_show(obj: CliContext) -> str:
             lines.append(node_line(node, marker))
             child_prefix = ""
         else:
-            connector = "`-- " if is_last else "|-- "
+            connector = "└─ " if is_last else "├─ "
             lines.append(f"{prefix}{connector}{node_line(node, marker)}")
-            child_prefix = prefix + ("    " if is_last else "|   ")
+            child_prefix = prefix + ("    " if is_last else "│   ")
 
         child_edges = [edge for edge in children.get(node, []) if edge.child not in seen]
         for idx, edge in enumerate(child_edges):

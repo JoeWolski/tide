@@ -17,9 +17,7 @@ This transcript shows user-facing workflows and realistic CLI behavior.
 ```bash
 $ tide show
 main (local, current)
-  origin/main* (remote)
-
-origin/main (remote)
+`-- origin/main* (remote)
 
 $ tide status
 main	loc=L	parent=-	source=-	pr=-
@@ -64,22 +62,10 @@ local/stack/api
 ```bash
 $ tide show
 main (local)
-  local/stack/api (local, current)
-    local/stack/tests (local)
-      origin/main* (remote)
-    origin/local/stack/api* (remote)
-
-local/stack/api (local, current)
-  local/stack/tests (local)
-    origin/main* (remote)
-  origin/local/stack/api* (remote)
-
-local/stack/tests (local)
-  origin/main* (remote)
-
-origin/local/stack/api (remote)
-
-origin/main (remote)
+`-- local/stack/api (local, current)
+    |-- local/stack/tests (local)
+    |   `-- origin/main* (remote)
+    `-- origin/local/stack/api* (remote)
 ```
 
 ### Push `local/stack/tests`
@@ -94,25 +80,11 @@ local/stack/tests
 ```bash
 $ tide show
 main (local)
-  local/stack/api (local)
-    local/stack/tests (local, current)
-      origin/local/stack/tests* (remote)
-    origin/local/stack/api* (remote)
-  origin/main* (remote)
-
-local/stack/api (local)
-  local/stack/tests (local, current)
-    origin/local/stack/tests* (remote)
-  origin/local/stack/api* (remote)
-
-local/stack/tests (local, current)
-  origin/local/stack/tests* (remote)
-
-origin/local/stack/api (remote)
-
-origin/local/stack/tests (remote)
-
-origin/main (remote)
+|-- local/stack/api (local)
+|   |-- local/stack/tests (local, current)
+|   |   `-- origin/local/stack/tests* (remote)
+|   `-- origin/local/stack/api* (remote)
+`-- origin/main* (remote)
 ```
 
 ## Situation: Propagate Parent Changes Upward (`ripple`)
@@ -123,22 +95,11 @@ local/stack/api
 
 $ tide show
 main (local)
-  local/stack/api (local, current)
-    local/stack/tests (local)
-  origin/local/stack/api* (remote)
-  origin/local/stack/tests* (remote)
-  origin/main* (remote)
-
-local/stack/api (local, current)
-  local/stack/tests (local)
-
-local/stack/tests (local)
-
-origin/local/stack/api (remote)
-
-origin/local/stack/tests (remote)
-
-origin/main (remote)
+|-- local/stack/api (local, current)
+|   `-- local/stack/tests (local)
+|-- origin/local/stack/api* (remote)
+|-- origin/local/stack/tests* (remote)
+`-- origin/main* (remote)
 ```
 
 ## Situation: Apply Current Branch Diff To Another Stack Entry (`apply`)
@@ -152,22 +113,11 @@ local/stack/tests -> local/stack/api
 
 $ tide show
 main (local)
-  local/stack/api (local)
-    local/stack/tests (local, current)
-  origin/local/stack/api* (remote)
-  origin/local/stack/tests* (remote)
-  origin/main* (remote)
-
-local/stack/api (local)
-  local/stack/tests (local, current)
-
-local/stack/tests (local, current)
-
-origin/local/stack/api (remote)
-
-origin/local/stack/tests (remote)
-
-origin/main (remote)
+|-- local/stack/api (local)
+|   `-- local/stack/tests (local, current)
+|-- origin/local/stack/api* (remote)
+|-- origin/local/stack/tests* (remote)
+`-- origin/main* (remote)
 ```
 
 ## Situation: Land Fails When PRs Are Missing (`land` validation)
@@ -190,22 +140,11 @@ $ tide pr create --stack local/stack/tests --scope path
 
 $ tide show
 main (local)
-  local/stack/api (local, PR#1)
-    local/stack/tests (local, PR#2, current)
-  origin/local/stack/api* (remote)
-  origin/local/stack/tests* (remote)
-  origin/main* (remote)
-
-local/stack/api (local, PR#1)
-  local/stack/tests (local, PR#2, current)
-
-local/stack/tests (local, PR#2, current)
-
-origin/local/stack/api (remote)
-
-origin/local/stack/tests (remote)
-
-origin/main (remote)
+|-- local/stack/api (local, PR#1)
+|   `-- local/stack/tests (local, PR#2, current)
+|-- origin/local/stack/api* (remote)
+|-- origin/local/stack/tests* (remote)
+`-- origin/main* (remote)
 
 $ tide --json status
 {"branches": [{"branch": "local/stack/api", "local": true, "parent": "main", "pr": 1, "remote": false, "source": "pr"}, {"branch": "local/stack/tests", "local": true, "parent": "local/stack/api", "pr": 2, "remote": false, "source": "pr"}, {"branch": "main", "local": true, "parent": null, "pr": null, "remote": false, "source": null}, {"branch": "origin/local/stack/api", "local": false, "parent": "main", "pr": null, "remote": true, "source": "heuristic"}, {"branch": "origin/local/stack/tests", "local": false, "parent": "main", "pr": null, "remote": true, "source": "heuristic"}, {"branch": "origin/main", "local": false, "parent": "main", "pr": null, "remote": true, "source": "heuristic"}]}
@@ -219,41 +158,25 @@ landed 2 branches onto main
 
 $ tide show
 main (local, current, div=1/0)
-  local/stack/api (local, PR#1)
-    local/stack/tests (local, PR#2)
+`-- local/stack/api (local, PR#1)
+    `-- local/stack/tests (local, PR#2)
 
 origin/main (remote)
-  origin/local/stack/api* (remote)
-  origin/local/stack/tests* (remote)
-
-local/stack/api (local, PR#1)
-  local/stack/tests (local, PR#2)
-
-local/stack/tests (local, PR#2)
-
-origin/local/stack/api (remote)
-
-origin/local/stack/tests (remote)
+|-- origin/local/stack/api* (remote)
+`-- origin/local/stack/tests* (remote)
 
 $ tide push
 main
 
 $ tide show
 main (local, current)
-  local/stack/api (local, PR#1)
-    local/stack/tests (local, PR#2)
-  origin/main* (remote)
+|-- local/stack/api (local, PR#1)
+|   `-- local/stack/tests (local, PR#2)
+`-- origin/main* (remote)
 
 origin/local/stack/api (remote)
 
 origin/local/stack/tests (remote)
-
-local/stack/api (local, PR#1)
-  local/stack/tests (local, PR#2)
-
-local/stack/tests (local, PR#2)
-
-origin/main (remote)
 ```
 
 ## Situation: Sync Local Branch With Updated Remote (`sync`)
@@ -264,20 +187,13 @@ main
 
 $ tide show
 main (local, current)
-  local/stack/api (local, PR#1)
-    local/stack/tests (local, PR#2)
-  origin/main* (remote)
+|-- local/stack/api (local, PR#1)
+|   `-- local/stack/tests (local, PR#2)
+`-- origin/main* (remote)
 
 origin/local/stack/api (remote)
 
 origin/local/stack/tests (remote)
-
-local/stack/api (local, PR#1)
-  local/stack/tests (local, PR#2)
-
-local/stack/tests (local, PR#2)
-
-origin/main (remote)
 ```
 
 ## Situation: Conflict Mode Demonstration (`--conflict=pause`)

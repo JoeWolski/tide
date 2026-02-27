@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import time
 from collections.abc import Callable
@@ -36,6 +37,36 @@ ConflictMode = Literal["rollback", "pause", "interactive"]
 
 def _conflict_mode(value: str) -> ConflictMode:
     return cast(ConflictMode, value)
+
+
+def _github_repo_http_base(origin_url: str | None) -> str | None:
+    if origin_url is None:
+        return None
+    ssh_scp = re.match(r"^git@github\.com:(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$", origin_url)
+    if ssh_scp is not None:
+        return f"https://github.com/{ssh_scp.group('owner')}/{ssh_scp.group('repo')}"
+
+    ssh_url = re.match(
+        r"^(?:ssh://)?git@github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$",
+        origin_url,
+    )
+    if ssh_url is not None:
+        return f"https://github.com/{ssh_url.group('owner')}/{ssh_url.group('repo')}"
+
+    https_url = re.match(
+        r"^https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$",
+        origin_url,
+    )
+    if https_url is not None:
+        return f"https://github.com/{https_url.group('owner')}/{https_url.group('repo')}"
+    return None
+
+
+def _pr_link(repo: GitRepo, pr_number: int) -> str:
+    repo_base = _github_repo_http_base(repo.remote_url("origin"))
+    if repo_base is None:
+        return f"PR #{pr_number}"
+    return f"{repo_base}/pull/{pr_number}"
 
 
 def _conflict_mode_for(obj: CliContext, override: str | None) -> ConflictMode:
@@ -591,7 +622,16 @@ def pr_create_cmd(
 @main.command(name="land")
 @click.option("--stack", "stack_selector", default=None)
 @click.option("--scope", type=click.Choice(["path", "subtree", "component"]), default="path")
-@click.option("--mode", type=click.Choice(["squash-each", "close-non-head"]), default="squash-each")
+@click.option(
+    "--mode",
+    type=click.Choice(["squash-each", "close-non-head", "queue-stack"]),
+    default="squash-each",
+)
+@click.option(
+    "--queue-provider",
+    type=click.Choice(["github-actions", "buildkite"]),
+    default="github-actions",
+)
 @click.option(
     "--conflict",
     type=click.Choice(["rollback", "interactive", "pause"]),
@@ -603,6 +643,7 @@ def land_cmd(
     stack_selector: str | None,
     scope: str,
     mode: str,
+    queue_provider: str,
     conflict: str | None,
 ) -> None:
     conflict_mode = _conflict_mode_for(obj, conflict)
@@ -634,6 +675,51 @@ def land_cmd(
                     click.echo(f"closed non-head PRs: {', '.join(closed)}")
                 else:
                     click.echo("no non-head PRs to close")
+            return
+
+        if mode == "queue-stack":
+            prs_by_head = {pr.head: pr for pr in obj.service.forge.list_prs_sync(to_land)}
+            ordered_branches = [branch for branch in reversed(branches) if branch != trunk]
+            ordered_prs = [prs_by_head[branch] for branch in ordered_branches]
+
+            submission = obj.service.forge.submit_queue_bundle_sync(
+                [pr.number for pr in ordered_prs],
+                provider=queue_provider,
+            )
+
+            comments_by_pr: dict[int, str] = {}
+            for idx, pr in enumerate(ordered_prs):
+                child_link = None
+                parent_link = None
+                if idx + 1 < len(ordered_prs):
+                    child_link = _pr_link(obj.repo, ordered_prs[idx + 1].number)
+                if idx - 1 >= 0:
+                    parent_link = _pr_link(obj.repo, ordered_prs[idx - 1].number)
+
+                parts = ["Landed as part of stack"]
+                if child_link is not None:
+                    parts.append(f"child: {child_link}")
+                if parent_link is not None:
+                    parts.append(f"parent: {parent_link}")
+                comment = ", ".join(parts)
+                comments_by_pr[pr.number] = comment
+                obj.service.forge.close_pr_sync(pr.number, comment)
+
+            if obj.json_output:
+                click.echo(
+                    json.dumps(
+                        {
+                            "submitted": submission,
+                            "closed": [pr.number for pr in ordered_prs],
+                            "comments": comments_by_pr,
+                        },
+                        sort_keys=True,
+                    )
+                )
+            else:
+                click.echo(
+                    f"submitted stack bundle with {len(ordered_prs)} PRs via {queue_provider}"
+                )
             return
 
         ordered = [branch for branch in reversed(branches) if branch != trunk]

@@ -281,6 +281,65 @@ def test_land_close_non_head_only_reports_non_head_branches(tmp_path: Path) -> N
     assert payload["closed"] == ["feat1"]
 
 
+def test_land_queue_stack_submits_one_bundle_and_closes_with_parent_child_links(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    git(repo, "remote", "add", "origin", "git@github.com:acme/tide.git")
+
+    (repo / "f.txt").write_text("base\n", encoding="utf-8")
+    git(repo, "add", "f.txt")
+    git(repo, "commit", "-m", "base")
+
+    git(repo, "checkout", "-b", "feat1")
+    (repo / "f.txt").write_text("feat1\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat1")
+    git(repo, "config", "branch.feat1.tide-parent", "main")
+
+    git(repo, "checkout", "-b", "feat2")
+    (repo / "f.txt").write_text("feat2\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat2")
+    git(repo, "config", "branch.feat2.tide-parent", "feat1")
+
+    git(repo, "checkout", "-b", "feat3")
+    (repo / "f.txt").write_text("feat3\n", encoding="utf-8")
+    git(repo, "commit", "-am", "feat3")
+    git(repo, "config", "branch.feat3.tide-parent", "feat2")
+
+    run(repo, "pr", "create", "--stack", "feat3", "--scope", "path")
+    out = run(
+        repo,
+        "--json",
+        "land",
+        "--stack",
+        "feat3",
+        "--scope",
+        "path",
+        "--mode",
+        "queue-stack",
+        "--queue-provider",
+        "buildkite",
+    )
+    payload = json.loads(out.stdout)
+    assert payload["submitted"]["provider"] == "buildkite"
+    assert payload["submitted"]["pr_numbers"] == [1, 2, 3]
+    assert payload["closed"] == [1, 2, 3]
+
+    land_state = json.loads((repo / ".git" / "tide" / "land.json").read_text(encoding="utf-8"))
+    assert len(land_state["submissions"]) == 1
+    assert land_state["submissions"][0]["mode"] == "stack-bundle"
+
+    comments = {entry["pr_number"]: entry["comment"] for entry in land_state["closures"]}
+    assert comments[1] == "Landed as part of stack, child: https://github.com/acme/tide/pull/2"
+    assert comments[2] == (
+        "Landed as part of stack, child: https://github.com/acme/tide/pull/3, "
+        "parent: https://github.com/acme/tide/pull/1"
+    )
+    assert comments[3] == "Landed as part of stack, parent: https://github.com/acme/tide/pull/2"
+
+
 def test_show_includes_disconnected_components(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
